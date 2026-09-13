@@ -2,11 +2,13 @@ import { useState } from 'react'
 
 function UploadMaterial() {
   const [files, setFiles] = useState([])
+  const [uploadMessage, setUploadMessage] = useState('')
 
   const handleFiles = (event) => {
     const selectedFiles = Array.from(event.target.files || [])
 
     setFiles((currentFiles) => [...currentFiles, ...selectedFiles])
+    setUploadMessage('')
 
     event.target.value = ''
   }
@@ -14,6 +16,15 @@ function UploadMaterial() {
   const removeFile = (indexToRemove) => {
     setFiles((currentFiles) =>
       currentFiles.filter((_, index) => index !== indexToRemove)
+    )
+    setUploadMessage('')
+  }
+
+  const handleUpload = () => {
+    if (files.length === 0) return
+
+    setUploadMessage(
+      `${files.length} material${files.length !== 1 ? 's' : ''} ready for AI analysis.`
     )
   }
 
@@ -77,6 +88,7 @@ function UploadMaterial() {
           <div className="mt-8">
             <div className="mb-4 flex items-center justify-between">
               <h3 className="text-lg font-semibold">Selected Files</h3>
+
               <span className="text-sm text-slate-400">
                 {files.length} file{files.length !== 1 ? 's' : ''}
               </span>
@@ -95,6 +107,7 @@ function UploadMaterial() {
                   >
                     <div className="min-w-0">
                       <p className="truncate font-medium">{file.name}</p>
+
                       <p className="mt-1 text-sm text-slate-400">
                         {file.type || 'Unknown file type'} •{' '}
                         {formatFileSize(file.size)}
@@ -116,11 +129,18 @@ function UploadMaterial() {
 
           <button
             type="button"
+            onClick={handleUpload}
             disabled={files.length === 0}
             className="mt-8 w-full rounded-lg bg-blue-600 px-6 py-3 font-semibold hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-40"
           >
             Upload Materials
           </button>
+
+          {uploadMessage && (
+            <p className="mt-4 rounded-lg border border-green-500/30 bg-green-500/10 p-4 text-center text-green-400">
+              {uploadMessage}
+            </p>
+          )}
         </div>
       </main>
     </div>
