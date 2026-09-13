@@ -2,63 +2,71 @@ function Dashboard() {
   return (
     <div className="min-h-screen bg-slate-950 text-white">
       <nav className="flex items-center justify-between border-b border-slate-800 bg-slate-900 px-8 py-5">
-        <h1 className="text-2xl font-bold text-blue-400">StudyAI</h1>
+        <a href="/" className="text-2xl font-bold text-blue-400">
+          StudyAI
+        </a>
 
-        <div className="flex items-center gap-4">
+        <div className="flex gap-6">
           <a href="/upload" className="text-slate-300 hover:text-white">
             Upload Materials
           </a>
-
-          <a
-            href="/chat"
-            className="rounded-lg bg-blue-600 px-5 py-2 font-semibold hover:bg-blue-700"
-          >
-            Ask AI
+          <a href="/chat" className="text-slate-300 hover:text-white">
+            AI Chat
           </a>
         </div>
       </nav>
 
-      <main className="mx-auto max-w-6xl px-6 py-10">
-        <h2 className="text-3xl font-bold">Welcome to StudyAI</h2>
-
-        <p className="mt-2 text-slate-400">
-          Organize your study materials and learn smarter.
-        </p>
-
-        <div className="mt-10 grid gap-6 md:grid-cols-3">
-          <div className="rounded-2xl border border-slate-800 bg-slate-900 p-6">
-            <p className="text-sm text-slate-400">Total Courses</p>
-            <h3 className="mt-3 text-4xl font-bold text-blue-400">0</h3>
-          </div>
-
-          <div className="rounded-2xl border border-slate-800 bg-slate-900 p-6">
-            <p className="text-sm text-slate-400">Study Materials</p>
-            <h3 className="mt-3 text-4xl font-bold text-blue-400">0</h3>
-          </div>
-
-          <div className="rounded-2xl border border-slate-800 bg-slate-900 p-6">
-            <p className="text-sm text-slate-400">Questions Asked</p>
-            <h3 className="mt-3 text-4xl font-bold text-blue-400">0</h3>
-          </div>
+      <main className="mx-auto max-w-6xl px-6 py-12">
+        <div className="mb-10">
+          <p className="text-blue-400">Welcome back</p>
+          <h1 className="mt-2 text-4xl font-bold">Your Study Dashboard</h1>
+          <p className="mt-3 text-slate-400">
+            Manage your study materials and continue learning with AI.
+          </p>
         </div>
 
-        <div className="mt-10 rounded-2xl border border-dashed border-slate-700 bg-slate-900 p-10 text-center">
-          <h3 className="text-2xl font-semibold">
-            Start Building Your Study Library
-          </h3>
-
-          <p className="mx-auto mt-3 max-w-xl text-slate-400">
-            Upload your notes, PDFs, PPTs, handwritten materials, and question
-            papers to begin.
-          </p>
-
+        <div className="grid gap-6 md:grid-cols-3">
           <a
             href="/upload"
-            className="mt-6 inline-block rounded-lg bg-blue-600 px-6 py-3 font-semibold hover:bg-blue-700"
+            className="rounded-2xl border border-slate-800 bg-slate-900 p-6 transition hover:border-blue-500"
           >
-            Upload Your First Material
+            <div className="text-4xl">📚</div>
+            <h2 className="mt-5 text-xl font-semibold">Upload Materials</h2>
+            <p className="mt-2 text-slate-400">
+              Add notes, PDFs, PPTs, images, and videos.
+            </p>
           </a>
+
+          <a
+            href="/chat"
+            className="rounded-2xl border border-slate-800 bg-slate-900 p-6 transition hover:border-blue-500"
+          >
+            <div className="text-4xl">💬</div>
+            <h2 className="mt-5 text-xl font-semibold">Ask AI Questions</h2>
+            <p className="mt-2 text-slate-400">
+              Ask questions based on your uploaded study materials.
+            </p>
+          </a>
+
+          <div className="rounded-2xl border border-slate-800 bg-slate-900 p-6">
+            <div className="text-4xl">🧠</div>
+            <h2 className="mt-5 text-xl font-semibold">Smart Insights</h2>
+            <p className="mt-2 text-slate-400">
+              Generate summaries, important topics, and exam-focused insights.
+            </p>
+          </div>
         </div>
+
+        <section className="mt-10 rounded-2xl border border-slate-800 bg-slate-900 p-6">
+          <h2 className="text-2xl font-bold">Recent Activity</h2>
+          <p className="mt-2 text-slate-400">
+            Your uploaded materials and AI-generated insights will appear here.
+          </p>
+
+          <div className="mt-6 rounded-lg border border-dashed border-slate-700 p-8 text-center text-slate-500">
+            No recent materials yet. Upload your first study material to begin.
+          </div>
+        </section>
       </main>
     </div>
   )
