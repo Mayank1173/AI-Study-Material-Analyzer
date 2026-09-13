@@ -1,25 +1,18 @@
+import Navbar from '../components/Navbar'
+
 function Dashboard() {
   return (
     <div className="min-h-screen bg-slate-950 text-white">
-      <nav className="flex items-center justify-between border-b border-slate-800 bg-slate-900 px-8 py-5">
-        <a href="/" className="text-2xl font-bold text-blue-400">
-          StudyAI
-        </a>
-
-        <div className="flex gap-6">
-          <a href="/upload" className="text-slate-300 hover:text-white">
-            Upload Materials
-          </a>
-          <a href="/chat" className="text-slate-300 hover:text-white">
-            AI Chat
-          </a>
-        </div>
-      </nav>
+      <Navbar />
 
       <main className="mx-auto max-w-6xl px-6 py-12">
         <div className="mb-10">
           <p className="text-blue-400">Welcome back</p>
-          <h1 className="mt-2 text-4xl font-bold">Your Study Dashboard</h1>
+
+          <h1 className="mt-2 text-4xl font-bold">
+            Your Study Dashboard
+          </h1>
+
           <p className="mt-3 text-slate-400">
             Manage your study materials and continue learning with AI.
           </p>
@@ -31,7 +24,11 @@ function Dashboard() {
             className="rounded-2xl border border-slate-800 bg-slate-900 p-6 transition hover:border-blue-500"
           >
             <div className="text-4xl">📚</div>
-            <h2 className="mt-5 text-xl font-semibold">Upload Materials</h2>
+
+            <h2 className="mt-5 text-xl font-semibold">
+              Upload Materials
+            </h2>
+
             <p className="mt-2 text-slate-400">
               Add notes, PDFs, PPTs, images, and videos.
             </p>
@@ -42,7 +39,11 @@ function Dashboard() {
             className="rounded-2xl border border-slate-800 bg-slate-900 p-6 transition hover:border-blue-500"
           >
             <div className="text-4xl">💬</div>
-            <h2 className="mt-5 text-xl font-semibold">Ask AI Questions</h2>
+
+            <h2 className="mt-5 text-xl font-semibold">
+              Ask AI Questions
+            </h2>
+
             <p className="mt-2 text-slate-400">
               Ask questions based on your uploaded study materials.
             </p>
@@ -50,7 +51,11 @@ function Dashboard() {
 
           <div className="rounded-2xl border border-slate-800 bg-slate-900 p-6">
             <div className="text-4xl">🧠</div>
-            <h2 className="mt-5 text-xl font-semibold">Smart Insights</h2>
+
+            <h2 className="mt-5 text-xl font-semibold">
+              Smart Insights
+            </h2>
+
             <p className="mt-2 text-slate-400">
               Generate summaries, important topics, and exam-focused insights.
             </p>
@@ -59,6 +64,7 @@ function Dashboard() {
 
         <section className="mt-10 rounded-2xl border border-slate-800 bg-slate-900 p-6">
           <h2 className="text-2xl font-bold">Recent Activity</h2>
+
           <p className="mt-2 text-slate-400">
             Your uploaded materials and AI-generated insights will appear here.
           </p>
