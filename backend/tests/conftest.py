@@ -1,0 +1,150 @@
+import pytest
+from fastapi.testclient import TestClient
+from sqlalchemy import create_engine, event
+from sqlalchemy.orm import Session, sessionmaker
+from sqlalchemy.pool import StaticPool
+
+from app.core.security import create_access_token, hash_password
+from app.db.base import Base
+from app.db.session import get_db
+from app.models import User
+from main import app
+
+TEST_PASSWORD = "testpassword123"
+
+test_engine = create_engine(
+    "sqlite://",
+    connect_args={"check_same_thread": False},
+    poolclass=StaticPool,
+)
+
+
+@event.listens_for(test_engine, "connect")
+def _enable_foreign_keys(dbapi_connection, connection_record):
+    cursor = dbapi_connection.cursor()
+    cursor.execute("PRAGMA foreign_keys=ON")
+    cursor.close()
+
+
+TestingSessionLocal = sessionmaker(
+    bind=test_engine, autoflush=False, autocommit=False, expire_on_commit=False
+)
+
+
+def _reset_database() -> None:
+    Base.metadata.drop_all(bind=test_engine)
+    Base.metadata.create_all(bind=test_engine)
+
+
+def make_db_user(
+    *, name: str, email: str, role: str = "student", password: str = TEST_PASSWORD
+) -> User:
+    user = User(
+        name=name,
+        email=email,
+        password_hash=hash_password(password),
+        role=role,
+    )
+    db = TestingSessionLocal()
+    db.add(user)
+    db.commit()
+    db.refresh(user)
+    db.close()
+    return user
+
+
+def auth_headers_for(user: User) -> dict:
+    token = create_access_token(user.id, user.role)
+    return {"Authorization": f"Bearer {token}"}
+
+
+def register_user(
+    client, name="Alice", email="alice@example.com", password=TEST_PASSWORD
+):
+    return client.post(
+        "/api/auth/register",
+        json={"name": name, "email": email, "password": password},
+    )
+
+
+def login_user(client, email="alice@example.com", password=TEST_PASSWORD):
+    return client.post(
+        "/api/auth/login", json={"email": email, "password": password}
+    )
+
+
+def make_auth_headers(client, email="alice@example.com", password=TEST_PASSWORD):
+    response = login_user(client, email=email, password=password)
+    assert response.status_code == 200
+    return {
+        "Authorization": f"Bearer {response.json()['access_token']}"
+    }
+
+
+@pytest.fixture()
+def db_session() -> Session:
+    _reset_database()
+    session = TestingSessionLocal()
+    yield session
+    session.close()
+    Base.metadata.drop_all(bind=test_engine)
+
+
+@pytest.fixture()
+def db():
+    """Provide a database session without resetting the schema.
+
+    Useful in API tests that also use the `client` fixture, where the schema
+    is already reset by `client` and any `teacher_auth`/`student_auth` data
+    must remain visible.
+    """
+    session = TestingSessionLocal()
+    yield session
+    session.close()
+
+
+@pytest.fixture()
+def client():
+    _reset_database()
+
+    def override_get_db():
+        db = TestingSessionLocal()
+        try:
+            yield db
+        finally:
+            db.close()
+
+    app.dependency_overrides[get_db] = override_get_db
+    with TestClient(app) as test_client:
+        yield test_client
+    app.dependency_overrides.clear()
+
+
+@pytest.fixture()
+def teacher_user():
+    return make_db_user(
+        name="Teacher",
+        email="teacher@example.com",
+        role="teacher",
+    )
+
+
+@pytest.fixture()
+def teacher_auth(client, teacher_user):
+    """Return (user_id, auth_headers) for a teacher account."""
+    return teacher_user.id, auth_headers_for(teacher_user)
+
+
+@pytest.fixture()
+def student_user():
+    return make_db_user(
+        name="Student",
+        email="student@example.com",
+        role="student",
+    )
+
+
+@pytest.fixture()
+def student_auth(client, student_user):
+    """Return (user_id, auth_headers) for a student account."""
+    return student_user.id, auth_headers_for(student_user)
