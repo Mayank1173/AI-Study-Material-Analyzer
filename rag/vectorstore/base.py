@@ -12,7 +12,7 @@ from abc import ABC, abstractmethod
 from collections.abc import Iterable
 from dataclasses import dataclass
 
-from rag.models import IndexedChunk, SearchResult
+from rag.models import IndexedChunk, SearchResult, VisualElement
 
 
 @dataclass(frozen=True)
@@ -76,6 +76,31 @@ class VectorStore(ABC):
     @abstractmethod
     def count(self, filter: SearchFilter | None = None) -> int:
         """Count indexed chunks, optionally scoped by a filter."""
+
+    def add_visuals(
+        self, visuals: Iterable[VisualElement], *, uploaded_by: str
+    ) -> int:  # pragma: no cover - optional capability
+        """Persist visual elements for an owner; returns rows written."""
+        raise NotImplementedError(
+            f"{type(self).__name__} does not support visual storage"
+        )
+
+    def search_visuals(
+        self,
+        query: str,
+        filter: SearchFilter,
+        top_k: int = 5,
+    ) -> list[VisualElement]:  # pragma: no cover - optional capability
+        """Keyword search over visual metadata; returns matching visuals."""
+        raise NotImplementedError(
+            f"{type(self).__name__} does not support visual search"
+        )
+
+    def count_visuals(self, filter: SearchFilter | None = None) -> int:  # pragma: no cover - optional capability
+        """Count stored visuals, optionally scoped by a filter."""
+        raise NotImplementedError(
+            f"{type(self).__name__} does not support visual storage"
+        )
 
     @abstractmethod
     def close(self) -> None:

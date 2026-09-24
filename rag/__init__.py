@@ -24,6 +24,15 @@ from rag.context_builder import (
     SYSTEM_PROMPT,
     build_context_block,
     build_grounded_prompt,
+    build_visual_context_block,
+)
+from rag.conversation import (
+    Conversation,
+    ConversationStore,
+    ConversationTurn,
+    Resolution,
+    make_conversation_id,
+    resolve_query,
 )
 from rag.embeddings import (
     DeterministicEmbedder,
@@ -50,6 +59,7 @@ from rag.errors import (
 from rag.extraction import extract_document
 from rag.extractors import SUPPORTED_EXTRACTABLE_TYPES, get_extractor
 from rag.knowledge_base import KnowledgeBase, get_knowledge_base
+from rag.intent import QueryIntent, analyze_query
 from rag.llm import LLMProvider, LLMResponse, MockProvider, OllamaProvider
 from rag.models import (
     ChunkMetadata,
@@ -60,6 +70,7 @@ from rag.models import (
     SearchResult,
     SourceRef,
     TextChunk,
+    VisualElement,
 )
 from rag.normalize import is_empty, normalize_text
 from rag.pipeline import process_document
@@ -74,6 +85,9 @@ __all__ = [
     "AnswerSource",
     "ChunkMetadata",
     "ChunkRange",
+    "Conversation",
+    "ConversationStore",
+    "ConversationTurn",
     "CorruptDocumentError",
     "DeterministicEmbedder",
     "DuplicateChunkError",
@@ -96,8 +110,10 @@ __all__ = [
     "NO_CONTEXT_SYSTEM_PROMPT",
     "OllamaProvider",
     "ProcessedDocument",
+    "QueryIntent",
     "RagError",
     "RagSettings",
+    "Resolution",
     "SUPPORTED_EXTRACTABLE_TYPES",
     "SYSTEM_PROMPT",
     "SearchFilter",
@@ -111,15 +127,20 @@ __all__ = [
     "VectorStore",
     "VectorStoreCorruptedError",
     "VectorStoreUnavailableError",
+    "VisualElement",
     "answer_question",
+    "analyze_query",
     "build_context_block",
     "build_grounded_prompt",
+    "build_visual_context_block",
     "extract_document",
     "get_embedder",
     "get_extractor",
     "get_knowledge_base",
     "get_rag_settings",
     "is_empty",
+    "make_conversation_id",
     "normalize_text",
     "process_document",
+    "resolve_query",
 ]

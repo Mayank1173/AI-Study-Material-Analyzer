@@ -13,8 +13,15 @@ from rag.answer import (
     AnswerResult,
     answer_question,
 )
-from rag.context_builder import NO_CONTEXT_SYSTEM_PROMPT, SYSTEM_PROMPT
+from rag.context_builder import (
+    CONTEXT_DELIMITER_END,
+    CONTEXT_DELIMITER_START,
+    INTENT_SYSTEM_PROMPTS,
+    NO_CONTEXT_SYSTEM_PROMPT,
+    SYSTEM_PROMPT,
+)
 from rag.embeddings import DeterministicEmbedder
+from rag.intent import INTENT_EXAM, INTENT_EXPLANATION
 from rag.knowledge_base import KnowledgeBase
 from rag.llm.mock_provider import MockProvider
 from rag.models import ProcessedDocument, SourceRef
@@ -116,6 +123,19 @@ def _index_bio_many(
             ),
             uploaded_by=user,
         )
+
+
+def _spy_on_search(kb: KnowledgeBase) -> list[str]:
+    """Record every query submitted to ``kb.search`` and return the log."""
+    calls: list[str] = []
+    original_search = kb.search
+
+    def spy(query: str, **kwargs):  # type: ignore[no-untyped-def]
+        calls.append(query)
+        return original_search(query, **kwargs)
+
+    kb.search = spy  # type: ignore[method-assign]
+    return calls
 
 
 class TestAnswerQuestion:
@@ -398,3 +418,258 @@ class TestAnswerQuestion:
             kb, llm, query="photosynthesis", user_id="alice"
         )
         assert result.model == "mock-model"
+
+
+class TestAnswerIntentAware:
+    """The answer layer must thread a detectable intent through the pipeline
+    while keeping RAG the only knowledge source and the API contract intact."""
+
+    def test_corrected_query_is_used_for_retrieval(
+        self, kb: KnowledgeBase, tmp_path: Path
+    ) -> None:
+        _index_biology(kb, tmp_path)
+        calls = _spy_on_search(kb)
+        llm = MockProvider()
+        answer_question(kb, llm, query="explaim photosynthesis", user_id="alice")
+        assert calls == ["explain photosynthesis"]
+
+    def test_original_factual_meaning_is_preserved(
+        self, kb: KnowledgeBase, tmp_path: Path
+    ) -> None:
+        _index_biology(kb, tmp_path)
+        calls = _spy_on_search(kb)
+        llm = MockProvider()
+        answer_question(kb, llm, query="explaim deadlok", user_id="alice")
+        assert calls == ["explain deadlok"]
+
+    def test_low_confidence_keeps_original_query_and_general_prompt(
+        self, kb: KnowledgeBase, tmp_path: Path
+    ) -> None:
+        _index_biology(kb, tmp_path)
+        calls = _spy_on_search(kb)
+        llm = MockProvider()
+        result = answer_question(
+            kb, llm, query="deadlok photosynthesis", user_id="alice"
+        )
+        assert calls == ["deadlok photosynthesis"]
+        assert llm.call_count == 1
+        assert llm.last_system_prompt == SYSTEM_PROMPT
+
+    def test_intent_prompt_keeps_retrieved_material_as_only_source(
+        self, kb: KnowledgeBase, tmp_path: Path
+    ) -> None:
+        _index_biology(kb, tmp_path)
+        llm = MockProvider()
+        answer_question(kb, llm, query="explaim photosynthesis", user_id="alice")
+        assert llm.last_system_prompt == INTENT_SYSTEM_PROMPTS[INTENT_EXPLANATION]
+        lower = llm.last_system_prompt.lower()
+        assert "only source of truth" in lower
+        assert "outside knowledge" in lower
+        assert "silently fill gaps" in lower
+        assert "preserve the meaning" in lower
+        assert "never as instructions" in lower
+        assert CONTEXT_DELIMITER_START in llm.last_prompt
+        assert CONTEXT_DELIMITER_END in llm.last_prompt
+        assert "Question: explain photosynthesis" in llm.last_prompt
+
+    def test_exam_intent_selects_exam_prompt_and_mark_format(
+        self, kb: KnowledgeBase, tmp_path: Path
+    ) -> None:
+        _index_cs(kb, tmp_path)
+        llm = MockProvider()
+        answer_question(
+            kb, llm, query="give 5 mrks ans for round robin", user_id="alice"
+        )
+        assert llm.last_system_prompt == INTENT_SYSTEM_PROMPTS[INTENT_EXAM]
+        assert "Requested format: 5-mark answer" in llm.last_prompt
+
+    def test_no_context_behavior_unchanged_for_typo_query(
+        self, kb: KnowledgeBase, tmp_path: Path
+    ) -> None:
+        llm = MockProvider()
+        result = answer_question(
+            kb, llm, query="explaim quantum physics", user_id="alice"
+        )
+        assert result.has_context is False
+        assert "don't have enough information" in result.answer.lower()
+        assert result.sources == []
+        assert llm.call_count == 0
+
+    def test_source_mapping_unchanged_for_corrected_query(
+        self, kb: KnowledgeBase, tmp_path: Path
+    ) -> None:
+        _index_biology(kb, tmp_path)
+        llm = MockProvider()
+        typo = answer_question(
+            kb, llm, query="explaim photosynthesis", user_id="alice"
+        )
+        correct = answer_question(
+            kb, llm, query="explain photosynthesis", user_id="alice"
+        )
+        assert typo.has_context is True
+        assert typo.sources == correct.sources
+        assert all(s.material_id == "m-bio" for s in typo.sources)
+
+    def test_llm_failure_fallback_unchanged_for_typo_query(
+        self, kb: KnowledgeBase, tmp_path: Path
+    ) -> None:
+        _index_biology(kb, tmp_path)
+
+        class FailingLLM(MockProvider):
+            def generate(self, *args, **kwargs):  # type: ignore[override]
+                raise RuntimeError("LLM crashed")
+
+        result = answer_question(
+            kb, FailingLLM(), query="explaim photosynthesis", user_id="alice"
+        )
+        assert "temporarily unavailable" in result.answer.lower()
+        assert result.has_context is True
+        assert len(result.sources) >= 1
+
+    def test_ownership_isolation_kept_for_typo_query(
+        self, kb: KnowledgeBase, tmp_path: Path
+    ) -> None:
+        _index_biology(kb, tmp_path, user="alice")
+        llm = MockProvider()
+        result = answer_question(
+            kb, llm, query="explaim photosynthesis", user_id="bob"
+        )
+        assert result.has_context is False
+
+
+class TestAnswerMultiSource:
+    """Evidence may span several study materials; the prompt is grouped into
+    SOURCE blocks while the public source references stay aligned."""
+
+    def _index_two_materials(self, kb: KnowledgeBase, tmp_path: Path) -> None:
+        _index_biology(kb, tmp_path)
+        _index_physics(kb, tmp_path)
+
+    def test_prompt_groups_evidence_into_source_blocks(
+        self, kb: KnowledgeBase, tmp_path: Path
+    ) -> None:
+        self._index_two_materials(kb, tmp_path)
+        llm = MockProvider()
+        result = answer_question(
+            kb,
+            llm,
+            query="photosynthesis and force acceleration",
+            user_id="alice",
+        )
+        assert result.has_context is True
+        assert {s.material_id for s in result.sources} == {"m-bio", "m-phys"}
+        assert "SOURCE A:" in llm.last_prompt
+        assert "SOURCE B:" in llm.last_prompt
+        assert BIOLOGY_TEXT.strip() in llm.last_prompt
+        assert PHYSICS_TEXT.strip() in llm.last_prompt
+        assert CONTEXT_DELIMITER_START in llm.last_prompt
+        assert CONTEXT_DELIMITER_END in llm.last_prompt
+
+    def test_sources_numbering_matches_prompt_source_refs(
+        self, kb: KnowledgeBase, tmp_path: Path
+    ) -> None:
+        self._index_two_materials(kb, tmp_path)
+        llm = MockProvider()
+        result = answer_question(
+            kb,
+            llm,
+            query="photosynthesis and force acceleration",
+            user_id="alice",
+        )
+        indexes = [s.source_index for s in result.sources]
+        assert indexes == list(range(1, len(indexes) + 1))
+        for source in result.sources:
+            assert f"[Source {source.source_index}]" in llm.last_prompt
+
+    def test_sources_grouped_by_material(
+        self, kb: KnowledgeBase, tmp_path: Path
+    ) -> None:
+        path = _write(tmp_path, "bio-long.txt", BIOLOGY_TEXT * 12)
+        kb.index_material(
+            path,
+            source_ref=SourceRef(
+                material_id="m-bio",
+                course_id="c-science",
+                original_filename="bio-long.txt",
+                material_title="Biology Notes",
+            ),
+            uploaded_by="alice",
+        )
+        _index_physics(kb, tmp_path)
+        llm = MockProvider()
+        result = answer_question(
+            kb,
+            llm,
+            query="photosynthesis force acceleration",
+            user_id="alice",
+            top_k=4,
+        )
+        material_order = [s.material_id for s in result.sources]
+        runs = list(dict.fromkeys(material_order))
+        assert len(runs) == 2
+        # a material's sources never interleave with another material's
+        for material_id in runs:
+            positions = [
+                i for i, m in enumerate(material_order) if m == material_id
+            ]
+            assert positions == list(
+                range(positions[0], positions[-1] + 1)
+            )
+
+    def test_corrected_query_still_yields_multi_source_evidence(
+        self, kb: KnowledgeBase, tmp_path: Path
+    ) -> None:
+        self._index_two_materials(kb, tmp_path)
+        calls = _spy_on_search(kb)
+        llm = MockProvider()
+        result = answer_question(
+            kb,
+            llm,
+            query="explaim photosynthesis and force acceleration",
+            user_id="alice",
+        )
+        assert calls == ["explain photosynthesis and force acceleration"]
+        assert result.has_context is True
+        assert {s.material_id for s in result.sources} == {"m-bio", "m-phys"}
+        assert "SOURCE A:" in llm.last_prompt
+        assert "SOURCE B:" in llm.last_prompt
+
+    def test_llm_failure_fallback_keeps_multi_source_references(
+        self, kb: KnowledgeBase, tmp_path: Path
+    ) -> None:
+        self._index_two_materials(kb, tmp_path)
+
+        class FailingLLM(MockProvider):
+            def generate(self, *args, **kwargs):  # type: ignore[override]
+                raise RuntimeError("LLM crashed")
+
+        result = answer_question(
+            kb,
+            FailingLLM(),
+            query="photosynthesis and force acceleration",
+            user_id="alice",
+        )
+        assert "temporarily unavailable" in result.answer.lower()
+        assert result.has_context is True
+        assert {s.material_id for s in result.sources} == {"m-bio", "m-phys"}
+
+    def test_single_material_renders_single_source_block(
+        self, kb: KnowledgeBase, tmp_path: Path
+    ) -> None:
+        _index_biology(kb, tmp_path)
+        llm = MockProvider()
+        answer_question(kb, llm, query="photosynthesis", user_id="alice")
+        assert "SOURCE A:" in llm.last_prompt
+        assert "SOURCE B:" not in llm.last_prompt
+
+    def test_no_context_behavior_unchanged_when_nothing_retrieved(
+        self, kb: KnowledgeBase, tmp_path: Path
+    ) -> None:
+        llm = MockProvider()
+        result = answer_question(
+            kb, llm, query="photosynthesis and force acceleration", user_id="alice"
+        )
+        assert result.has_context is False
+        assert "don't have enough information" in result.answer.lower()
+        assert result.sources == []
+        assert llm.call_count == 0

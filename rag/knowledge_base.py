@@ -18,7 +18,13 @@ from rag.errors import (
     EmptyQueryError,
     IndexingError,
 )
-from rag.models import IndexedChunk, ProcessedDocument, SearchResult, SourceRef
+from rag.models import (
+    IndexedChunk,
+    ProcessedDocument,
+    SearchResult,
+    SourceRef,
+    VisualElement,
+)
 from rag.pipeline import process_document
 from rag.vectorstore.base import SearchFilter, VectorStore
 from rag.vectorstore.sqlite_store import SqliteVectorStore
@@ -88,6 +94,14 @@ class KnowledgeBase:
         course_id = _course_id_for(document)
         self._store.delete_material(material_id)
 
+        if document.visuals:
+            try:
+                self._store.add_visuals(document.visuals, uploaded_by=uploaded_by)
+            except Exception:
+                # Visual persistence is best-effort: never fail indexing a
+                # material because visual metadata could not be stored.
+                pass
+
         chunks = document.chunks
         if not chunks:
             return 0
@@ -153,6 +167,51 @@ class KnowledgeBase:
         if user_id is None and course_id is None and material_id is None:
             return self._store.count()
         return self._store.count(
+            SearchFilter(
+                user_id=user_id or "",
+                course_id=course_id,
+                material_id=material_id,
+            )
+        )
+
+    def visual_search(
+        self,
+        query: str,
+        *,
+        user_id: str,
+        course_id: str | None = None,
+        material_id: str | None = None,
+        top_k: int = 5,
+    ) -> list[VisualElement]:
+        """Keyword search over visual metadata, scoped to ``user_id``.
+
+        Visual search never runs for regular text questions; callers route to
+        it only when the query is flagged as visual (see ``QueryIntent.is_visual``).
+        Ownership enforcement is identical to :meth:`search`: ``user_id`` is
+        mandatory and course/material filters can only narrow the eligible set.
+        """
+        if not query or not query.strip():
+            raise EmptyQueryError("a non-empty search query is required")
+        return self._store.search_visuals(
+            query.strip(),
+            SearchFilter(
+                user_id=user_id,
+                course_id=course_id,
+                material_id=material_id,
+            ),
+            top_k=top_k,
+        )
+
+    def count_visuals(
+        self,
+        user_id: str | None = None,
+        course_id: str | None = None,
+        material_id: str | None = None,
+    ) -> int:
+        """Number of stored visuals, optionally scoped to a user/material."""
+        if user_id is None and course_id is None and material_id is None:
+            return self._store.count_visuals()
+        return self._store.count_visuals(
             SearchFilter(
                 user_id=user_id or "",
                 course_id=course_id,

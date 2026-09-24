@@ -23,11 +23,32 @@ from rag.models import (
     ProcessedDocument,
     SourceRef,
     TextChunk,
+    VisualElement,
 )
 from rag.normalize import normalize_text
 
 _JOINER = "\n\n"
 SectionInterval = tuple[int, int, ExtractedSection]
+
+
+def _materialize_visual(visual: VisualElement, ref: SourceRef) -> VisualElement:
+    """Attach the source-record references to one extracted visual element."""
+    material_id = ref.material_id
+    return VisualElement(
+        visual_id=f"{material_id}:{visual.visual_id}" if material_id else visual.visual_id,
+        material_id=material_id,
+        course_id=ref.course_id,
+        original_filename=ref.original_filename,
+        material_title=ref.material_title,
+        page=visual.page,
+        slide=visual.slide,
+        source_location=visual.source_location,
+        visual_type=visual.visual_type,
+        caption=visual.caption,
+        nearby_text=visual.nearby_text,
+        description=visual.description,
+        pixel_analyzed=visual.pixel_analyzed,
+    )
 
 
 def _extension_of(filename: str | None) -> str:
@@ -158,10 +179,13 @@ def process_document(
         )
         chunks.append(TextChunk(text=rng.text, metadata=metadata))
 
+    visuals = tuple(_materialize_visual(v, ref) for v in extracted.visuals)
+
     return ProcessedDocument(
         source=ref,
         file_type=resolved_type,
         extracted_text=combined,
         chunks=tuple(chunks),
         total_chunks=total,
+        visuals=visuals,
     )
