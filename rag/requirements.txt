@@ -1,0 +1,8 @@
+# RAG document-processing + local vector-store runtime dependencies.
+# Extraction-only libraries (no LLM providers), plus numpy for the
+# SQLite-backed cosine vector store. The optional sentence-transformers
+# embedding backend lives in requirements-embedding.txt.
+pypdf==6.19.0
+python-docx==1.2.0
+python-pptx==1.0.2
+numpy>=2.0,<3.0

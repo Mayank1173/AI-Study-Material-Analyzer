@@ -1,0 +1,6 @@
+__pycache__/
+*.pyc
+.pytest_cache/
+
+# Local knowledge-base data (never commit index blobs)
+rag_data/

@@ -1,93 +1,156 @@
-import { useState } from 'react'
+import { useState } from 'react';
 
 function Chat() {
-  const [question, setQuestion] = useState('')
-  const [messages, setMessages] = useState([
-    {
-      role: 'ai',
-      text: 'Hello! Upload your study materials and ask me anything about your subjects.',
-    },
-  ])
+  const [messages, setMessages] = useState([]);
+  const [question, setQuestion] = useState('');
 
-  const handleSubmit = (event) => {
-    event.preventDefault()
+  const handleSubmit = async (event) => {
+    event.preventDefault(); // Stop page refresh
+    if (!question.trim()) return; // Don't send empty messages
 
-    if (!question.trim()) return
-
+    // 1. Add user's message
     setMessages((currentMessages) => [
       ...currentMessages,
-      {
-        role: 'user',
-        text: question,
-      },
-      {
-        role: 'ai',
-        text: `I received your question: "${question}". AI-generated answers will be connected after the backend is added.`,
-      },
-    ])
+      { sender: 'You', text: question }
+    ]);
 
-    setQuestion('')
-  }
+    const userQuestion = question; // Save current question
+    setQuestion(''); // Clear input box
 
+    try {
+      // 2. Send to FastAPI Backend
+      const response = await fetch('http://localhost:8000/api/chat', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ question: userQuestion })
+      });
+
+      if (!response.ok) {
+        throw new Error(`Backend returned ${response.status}`);
+      }
+
+      const data = await response.json();
+
+      // 3. Add AI's response
+      setMessages((currentMessages) => [
+        ...currentMessages,
+        { sender: 'AI', text: data.answer || data.response || "Received your message!" }
+      ]);
+
+    } catch (error) {
+      setMessages((currentMessages) => [
+        ...currentMessages,
+        { sender: 'AI', text: "Error connecting to backend. Please check if the server is running on port 8000." }
+      ]);
+    }
+  };
+
+  // THIS RETURN STATEMENT IS WHAT DRAWS THE UI. DO NOT DELETE IT.
   return (
-    <div className="flex min-h-screen flex-col bg-slate-950 text-white">
-      <nav className="flex items-center justify-between border-b border-slate-800 bg-slate-900 px-8 py-5">
-        <a href="/dashboard" className="text-2xl font-bold text-blue-400">
-          StudyAI
-        </a>
-
-        <a href="/upload" className="text-slate-300 hover:text-white">
-          Upload Materials
-        </a>
-      </nav>
-
-      <main className="mx-auto flex w-full max-w-4xl flex-1 flex-col px-6 py-10">
-        <h2 className="text-3xl font-bold">Ask StudyAI</h2>
-
-        <p className="mt-2 text-slate-400">
-          Ask questions based on your uploaded study materials.
-        </p>
-
-        <div className="mt-8 flex flex-1 flex-col rounded-2xl border border-slate-800 bg-slate-900 p-6">
-          <div className="flex-1 space-y-4 overflow-y-auto">
-            {messages.map((message, index) => (
-              <div
-                key={index}
-                className={`max-w-3xl rounded-xl p-4 ${
-                  message.role === 'user'
-                    ? 'ml-auto bg-blue-600'
-                    : 'bg-slate-800'
-                }`}
-              >
-                <p className="text-sm text-slate-300">
-                  {message.role === 'user' ? 'You' : 'AI Assistant'}
-                </p>
-
-                <p className="mt-2">{message.text}</p>
-              </div>
-            ))}
+    <div style={styles.container}>
+      <h1 style={styles.heading}>AI Assistant</h1>
+      
+      <div style={styles.chatBox}>
+        {messages.length === 0 && (
+          <div style={styles.emptyState}>
+            <p>Hello! Upload your study materials and ask me anything about your subjects.</p>
           </div>
+        )}
+        
+        {messages.map((msg, index) => (
+          <div 
+            key={index} 
+            style={msg.sender === 'You' ? styles.userMessage : styles.aiMessage}
+          >
+            <strong>{msg.sender}:</strong> {msg.text}
+          </div>
+        ))}
+      </div>
 
-          <form onSubmit={handleSubmit} className="mt-6 flex gap-3">
-            <input
-              type="text"
-              value={question}
-              onChange={(event) => setQuestion(event.target.value)}
-              placeholder="Ask a question about your study material..."
-              className="flex-1 rounded-lg border border-slate-700 bg-slate-950 px-4 py-3 outline-none focus:border-blue-500"
-            />
-
-            <button
-              type="submit"
-              className="rounded-lg bg-blue-600 px-6 py-3 font-semibold hover:bg-blue-700"
-            >
-              Send
-            </button>
-          </form>
-        </div>
-      </main>
+      <form onSubmit={handleSubmit} style={styles.form}>
+        <input
+          type="text"
+          value={question}
+          onChange={(e) => setQuestion(e.target.value)}
+          placeholder="Ask a question about your study material..."
+          style={styles.input}
+        />
+        <button type="submit" style={styles.button}>
+          Send
+        </button>
+      </form>
     </div>
-  )
+  );
 }
 
-export default Chat
+// Basic styling to match your dark dashboard theme
+const styles = {
+  container: {
+    maxWidth: '800px',
+    margin: '40px auto',
+    padding: '20px',
+    fontFamily: 'Arial, sans-serif',
+    color: '#ffffff',
+  },
+  heading: {
+    fontSize: '28px',
+    marginBottom: '20px',
+    textAlign: 'center',
+  },
+  chatBox: {
+    backgroundColor: '#1e293b',
+    borderRadius: '10px',
+    padding: '20px',
+    minHeight: '400px',
+    maxHeight: '500px',
+    overflowY: 'auto',
+    marginBottom: '20px',
+    display: 'flex',
+    flexDirection: 'column',
+    gap: '15px',
+  },
+  emptyState: {
+    textAlign: 'center',
+    color: '#94a3b8',
+    marginTop: '150px',
+  },
+  userMessage: {
+    alignSelf: 'flex-end',
+    backgroundColor: '#3b82f6',
+    padding: '10px 15px',
+    borderRadius: '10px',
+    maxWidth: '70%',
+  },
+  aiMessage: {
+    alignSelf: 'flex-start',
+    backgroundColor: '#334155',
+    padding: '10px 15px',
+    borderRadius: '10px',
+    maxWidth: '70%',
+  },
+  form: {
+    display: 'flex',
+    gap: '10px',
+  },
+  input: {
+    flex: 1,
+    padding: '15px',
+    borderRadius: '8px',
+    border: '1px solid #475569',
+    backgroundColor: '#0f172a',
+    color: 'white',
+    fontSize: '16px',
+  },
+  button: {
+    padding: '15px 30px',
+    borderRadius: '8px',
+    border: 'none',
+    backgroundColor: '#3b82f6',
+    color: 'white',
+    fontSize: '16px',
+    cursor: 'pointer',
+    fontWeight: 'bold',
+  }
+};
+
+export default Chat;
