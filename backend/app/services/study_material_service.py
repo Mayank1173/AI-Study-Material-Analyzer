@@ -1,3 +1,4 @@
+import logging
 import uuid
 from datetime import datetime, timezone
 
@@ -12,31 +13,17 @@ from app.core.storage import (
     save_upload,
     stored_filename_for,
 )
-from app.models import Course, CourseEnrollment, StudyMaterial, User
+from app.models import Course, StudyMaterial, User
 from app.schemas.study_material import StudyMaterialCreate
 from app.services.errors import AccessDeniedError, ResourceNotFoundError
 from app.services.pagination import escape_like
 
-
-def can_access_course_materials(db: Session, course: Course, user: User) -> bool:
-    """Course owner teachers and enrolled students may access materials."""
-    if course.teacher_id is not None and course.teacher_id == user.id:
-        return True
-    if user.role == "student":
-        return (
-            db.scalar(
-                select(CourseEnrollment.id).where(
-                    CourseEnrollment.course_id == course.id,
-                    CourseEnrollment.student_id == user.id,
-                )
-            )
-            is not None
-        )
-    return False
+logger = logging.getLogger(__name__)
 
 
-def assert_can_view_material(db: Session, material: StudyMaterial, user: User) -> None:
-    if not can_access_course_materials(db, material.course, user):
+def assert_owns_material(user: User, material: StudyMaterial) -> None:
+    """Materials are private to the user who uploaded them."""
+    if material.uploaded_by != user.id:
         raise AccessDeniedError("Not authorized to access this material")
 
 
@@ -83,47 +70,20 @@ def list_study_materials(
     page: int,
     page_size: int,
 ) -> tuple[int, list[StudyMaterial]]:
-    """List materials the user may access.
+    """List the materials uploaded by the authenticated user.
 
-    When a course_id filter is given the caller must own the course or be an
-    enrolled student. Otherwise the list is restricted to courses the caller
-    owns (teachers) or is enrolled in (students).
+    When a ``course_id`` filter is given the course must exist; the result is
+    otherwise always restricted to the caller's own uploads.
 
     Optional filters (course, type, status) and title/original-file search can
     be combined with pagination. Returns ``(total, items)`` where ``total`` is
     the number of matching materials before pagination is applied.
     """
+    conditions = [StudyMaterial.uploaded_by == user.id]
     if course_id is not None:
-        course = db.get(Course, course_id)
-        if course is None:
+        if db.get(Course, course_id) is None:
             raise ResourceNotFoundError("Course", course_id)
-        if not can_access_course_materials(db, course, user):
-            raise AccessDeniedError(
-                "Not authorized to view materials for this course"
-            )
-        accessible_course_ids = [course_id]
-    elif user.role == "teacher":
-        accessible_course_ids = list(
-            db.scalars(
-                select(Course.id).where(Course.teacher_id == user.id)
-            ).all()
-        )
-    elif user.role == "student":
-        accessible_course_ids = list(
-            db.scalars(
-                select(CourseEnrollment.course_id).where(
-                    CourseEnrollment.student_id == user.id
-                )
-            ).all()
-        )
-    else:
-        accessible_course_ids = []
-
-    conditions = []
-    if accessible_course_ids:
-        conditions.append(StudyMaterial.course_id.in_(accessible_course_ids))
-    else:
-        return 0, []
+        conditions.append(StudyMaterial.course_id == course_id)
 
     if material_type is not None:
         conditions.append(StudyMaterial.material_type == material_type)
@@ -241,7 +201,7 @@ def upload_file_material(
     return material
 
 
-def delete_study_material(db: Session, material_id: uuid.UUID) -> None:
+def delete_study_material(db: Session, material_id: uuid.UUID, knowledge_base=None) -> None:
     material = get_study_material(db, material_id)
     stored_file_name = material.stored_file_name
 
@@ -250,6 +210,99 @@ def delete_study_material(db: Session, material_id: uuid.UUID) -> None:
 
     if stored_file_name:
         delete_stored_file(stored_file_name)
+
+    _remove_rag_chunks(str(material_id), knowledge_base=knowledge_base)
+
+
+def _remove_rag_chunks(
+    material_id: str, knowledge_base=None
+) -> None:
+    """Best-effort removal of RAG chunks for a deleted material."""
+    try:
+        if knowledge_base is not None:
+            knowledge_base.delete_material(material_id)
+        else:
+            from rag.knowledge_base import get_knowledge_base
+
+            kb = get_knowledge_base()
+            try:
+                kb.delete_material(material_id)
+            finally:
+                kb.close()
+    except Exception:
+        logger.warning("Failed to remove RAG chunks for material %s", material_id)
+
+
+def process_material(
+    db: Session, material_id: uuid.UUID, knowledge_base=None
+) -> StudyMaterial:
+    """Process a study material: index it into the RAG knowledge base.
+
+    Lifecycle: uploaded/failed -> processing -> processed | failed.
+    Re-indexing the same material replaces prior chunks (idempotent).
+    """
+    material = get_study_material(db, material_id)
+    material_id_str = str(material.id)
+
+    material.status = "processing"
+    material.processed_at = None
+    material.error_message = None
+    db.commit()
+    db.refresh(material)
+
+    if not material.stored_file_name:
+        mark_material_failed(
+            db, material_id, error_message="No stored file available for processing"
+        )
+        return get_study_material(db, material_id)
+
+    try:
+        path = resolve_file_path(material.stored_file_name)
+    except ValueError:
+        mark_material_failed(
+            db, material_id, error_message="Stored file path is invalid"
+        )
+        return get_study_material(db, material_id)
+
+    if not path.is_file():
+        mark_material_failed(
+            db, material_id, error_message="Stored file not found on disk"
+        )
+        return get_study_material(db, material_id)
+
+    try:
+        from rag.models import SourceRef
+
+        source_ref = SourceRef(
+            material_id=material_id_str,
+            course_id=str(material.course_id),
+            original_filename=material.file_name,
+            material_title=material.title,
+        )
+
+        kb = knowledge_base
+        owns_kb = False
+        if kb is None:
+            from rag.knowledge_base import get_knowledge_base
+
+            kb = get_knowledge_base()
+            owns_kb = True
+        try:
+            kb.index_material(
+                str(path),
+                source_ref=source_ref,
+                uploaded_by=str(material.uploaded_by),
+            )
+        finally:
+            if owns_kb:
+                kb.close()
+
+        return mark_material_processed(db, material_id)
+
+    except Exception as exc:
+        error_msg = str(exc)[:MAX_ERROR_MESSAGE_LENGTH]
+        logger.exception("Processing failed for material %s", material_id_str)
+        return mark_material_failed(db, material_id, error_message=error_msg)
 
 
 # ---------------------------------------------------------------------------

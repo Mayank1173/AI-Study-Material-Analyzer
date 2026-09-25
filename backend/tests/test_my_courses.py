@@ -1,7 +1,6 @@
 """Tests for the GET /api/courses/mine endpoint.
 
-Teachers should see only the courses they own; students should see only the
-courses they are enrolled in.
+Each authenticated user sees only the courses they created (teacher_id = user.id).
 """
 import pytest
 
@@ -14,16 +13,12 @@ def _course(client, headers, name, code):
     )
 
 
-def _enroll(client, course_id, student_headers):
-    return client.post(f"/api/courses/{course_id}/enroll", headers=student_headers)
+# ---------------- Per-user scoping ----------------
 
 
-# ---------------- Teacher view ----------------
-
-
-def test_teacher_sees_only_owned_courses(client):
-    alice = make_db_user(name="Alice", email="alice@example.com", role="teacher")
-    bob = make_db_user(name="Bob", email="bob@example.com", role="teacher")
+def test_user_sees_only_own_courses(client):
+    alice = make_db_user(name="Alice", email="alice@example.com")
+    bob = make_db_user(name="Bob", email="bob@example.com")
     alice_headers = auth_headers_for(alice)
     bob_headers = auth_headers_for(bob)
 
@@ -39,35 +34,11 @@ def test_teacher_sees_only_owned_courses(client):
     assert codes == {"CS301", "CS305"}
 
 
-# ---------------- Student view ----------------
+def test_user_without_courses_returns_empty(client):
+    user = make_db_user(name="Empty", email="empty@example.com")
+    headers = auth_headers_for(user)
 
-
-def test_student_sees_only_enrolled_courses(client, teacher_auth):
-    _, teacher_headers = teacher_auth
-    course1 = _course(
-        client, teacher_headers, "Databases I", "CS301"
-    ).json()["id"]
-    course2 = _course(
-        client, teacher_headers, "Databases II", "CS302"
-    ).json()["id"]
-
-    viewer = make_db_user(name="Viewer", email="viewer@example.com", role="student")
-    viewer_headers = auth_headers_for(viewer)
-    assert _enroll(client, course1, viewer_headers).status_code == 201
-
-    response = client.get("/api/courses/mine", headers=viewer_headers)
-    assert response.status_code == 200
-    body = response.json()
-    assert body["total"] == 1
-    assert body["items"][0]["id"] == course1
-
-
-def test_unenrolled_student_my_courses_empty(client, teacher_auth, student_auth):
-    _, teacher_headers = teacher_auth
-    _, student_headers = student_auth
-    _course(client, teacher_headers, "Databases", "CS301")
-
-    response = client.get("/api/courses/mine", headers=student_headers)
+    response = client.get("/api/courses/mine", headers=headers)
     assert response.status_code == 200
     body = response.json()
     assert body["items"] == []
@@ -78,8 +49,8 @@ def test_unenrolled_student_my_courses_empty(client, teacher_auth, student_auth)
 # ---------------- Pagination / search ----------------
 
 
-def test_my_courses_pagination_envelope(client, teacher_auth):
-    _, headers = teacher_auth
+def test_my_courses_pagination_envelope(client, user_auth):
+    _, headers = user_auth
     for i in range(5):
         _course(client, headers, name=f"Course {i}", code=f"MINE{i}")
 
@@ -96,8 +67,8 @@ def test_my_courses_pagination_envelope(client, teacher_auth):
 
 
 def test_my_courses_search_scoped(client):
-    alice = make_db_user(name="Alice", email="alice@example.com", role="teacher")
-    bob = make_db_user(name="Bob", email="bob@example.com", role="teacher")
+    alice = make_db_user(name="Alice", email="alice@example.com")
+    bob = make_db_user(name="Bob", email="bob@example.com")
     alice_headers = auth_headers_for(alice)
     bob_headers = auth_headers_for(bob)
 
@@ -120,8 +91,8 @@ def test_my_courses_requires_authentication(client):
 # ---------------- Envelope consistency ----------------
 
 
-def test_my_courses_envelope_keys(client, teacher_auth):
-    _, headers = teacher_auth
+def test_my_courses_envelope_keys(client, user_auth):
+    _, headers = user_auth
     _course(client, headers, "Databases", "CS301")
     body = client.get("/api/courses/mine", headers=headers).json()
     assert set(body.keys()) == {

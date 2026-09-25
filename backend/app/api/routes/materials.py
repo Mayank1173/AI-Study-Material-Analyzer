@@ -15,7 +15,7 @@ from fastapi import (
 from fastapi.responses import FileResponse
 from sqlalchemy.orm import Session
 
-from app.api.deps import get_current_active_user, require_teacher
+from app.api.deps import get_current_active_user
 from app.core.config import get_settings
 from app.core.storage import resolve_file_path
 from app.db.session import get_db
@@ -26,7 +26,7 @@ from app.schemas.study_material import (
     StudyMaterialCreate,
     StudyMaterialResponse,
 )
-from app.services import course_service, study_material_service
+from app.services import study_material_service
 from app.services.errors import (
     AccessDeniedError,
     FileTooLargeError,
@@ -34,8 +34,14 @@ from app.services.errors import (
     UnsupportedFileTypeError,
 )
 from app.services.pagination import total_pages
+from rag.knowledge_base import KnowledgeBase, get_knowledge_base
 
 router = APIRouter(prefix="/api/materials", tags=["Study Materials"])
+
+
+def get_processing_knowledge_base() -> KnowledgeBase:
+    """Return a KnowledgeBase for processing/deletion. Overrideable in tests."""
+    return get_knowledge_base()
 
 
 def _not_found(exc):
@@ -58,22 +64,19 @@ def _forbidden(exc):
 def create_study_material(
     payload: StudyMaterialCreate,
     db: Session = Depends(get_db),
-    current_user: User = Depends(require_teacher),
+    current_user: User = Depends(get_current_active_user),
 ):
-    """Create a new study material record. Owning teacher only.
+    """Create a new study material record.
 
     The uploader identity is taken from the authenticated user, never from the
-    request body, and the teacher must own the target course.
+    request body. The target course must exist.
     """
     try:
-        course_service.require_course_owner(db, payload.course_id, current_user)
         return study_material_service.create_study_material(
             db, payload, uploaded_by=current_user.id
         )
     except ResourceNotFoundError as exc:
         _not_found(exc)
-    except AccessDeniedError as exc:
-        _forbidden(exc)
 
 
 @router.post(
@@ -88,12 +91,12 @@ async def upload_study_material(
     file: UploadFile | None = File(default=None),
     source_url: str | None = Form(default=None, max_length=2048),
     db: Session = Depends(get_db),
-    current_user: User = Depends(require_teacher),
+    current_user: User = Depends(get_current_active_user),
 ):
     """Upload a study-material file or register a URL-based material.
 
-    Teacher-only, and the teacher must own the target course. The uploader
-    identity comes from the access token.
+    Any authenticated user can upload. The uploader identity comes from the
+    access token and the target course must exist.
     """
     if file is None and not source_url:
         raise HTTPException(
@@ -105,13 +108,6 @@ async def upload_study_material(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Provide either a file or a source_url, not both",
         )
-
-    try:
-        course_service.require_course_owner(db, course_id, current_user)
-    except ResourceNotFoundError as exc:
-        _not_found(exc)
-    except AccessDeniedError as exc:
-        _forbidden(exc)
 
     try:
         if file is not None:
@@ -167,11 +163,11 @@ def list_study_materials(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_active_user),
 ):
-    """List study materials the caller may access.
+    """List the study materials uploaded by the authenticated user.
 
     Optionally filtered by course, type, or status, and searched by title or
-    original filename. When a course filter is given, the caller must be the
-    owning teacher or an enrolled student. Results are paginated.
+    original filename. Results are always scoped to the caller's own uploads
+    and are paginated.
     """
     try:
         total, materials = study_material_service.list_study_materials(
@@ -205,11 +201,11 @@ def get_study_material(
 ):
     """Retrieve a single study material by ID.
 
-    Owning teacher and enrolled students only.
+    Only the user who uploaded the material may access it.
     """
     try:
         material = study_material_service.get_study_material(db, material_id)
-        study_material_service.assert_can_view_material(db, material, current_user)
+        study_material_service.assert_owns_material(current_user, material)
         return material
     except ResourceNotFoundError as exc:
         _not_found(exc)
@@ -225,11 +221,11 @@ def download_study_material(
 ) -> Any:
     """Download the stored file for a study material, where one exists.
 
-    Owning teacher and enrolled students only.
+    Only the user who uploaded the material may access it.
     """
     try:
         material = study_material_service.get_study_material(db, material_id)
-        study_material_service.assert_can_view_material(db, material, current_user)
+        study_material_service.assert_owns_material(current_user, material)
     except ResourceNotFoundError as exc:
         _not_found(exc)
     except AccessDeniedError as exc:
@@ -274,18 +270,18 @@ def download_study_material(
 def process_study_material(
     material_id: uuid.UUID,
     db: Session = Depends(get_db),
-    current_user: User = Depends(require_teacher),
+    current_user: User = Depends(get_current_active_user),
+    knowledge_base: KnowledgeBase = Depends(get_processing_knowledge_base),
 ):
     """Start (or restart) processing for a study material.
 
-    Owning teacher only. Only freshly uploaded or failed materials may be
-    moved into ``processing``; the transition records state so a future
-    processing worker can pick the material up. No processing is performed
-    by this endpoint.
+    Only the user who uploaded the material may trigger processing. Only
+    freshly uploaded or failed materials may be moved into ``processing``.
+    The material is indexed into the RAG knowledge base.
     """
     try:
         material = study_material_service.get_study_material(db, material_id)
-        course_service.require_course_owner(db, material.course_id, current_user)
+        study_material_service.assert_owns_material(current_user, material)
     except ResourceNotFoundError as exc:
         _not_found(exc)
     except AccessDeniedError as exc:
@@ -296,26 +292,31 @@ def process_study_material(
             status_code=status.HTTP_409_CONFLICT,
             detail="Only freshly uploaded or failed materials can start processing",
         )
-    return study_material_service.mark_material_processing(db, material_id)
+
+    return study_material_service.process_material(
+        db, material_id, knowledge_base=knowledge_base
+    )
 
 
 @router.delete("/{material_id}", status_code=status.HTTP_204_NO_CONTENT)
 def delete_study_material(
     material_id: uuid.UUID,
     db: Session = Depends(get_db),
-    current_user: User = Depends(require_teacher),
+    current_user: User = Depends(get_current_active_user),
+    knowledge_base: KnowledgeBase = Depends(get_processing_knowledge_base),
 ) -> None:
-    """Delete a study material by ID, including its stored file.
+    """Delete a study material by ID, including its stored file and RAG chunks.
 
-    Teacher-only, and only the teacher who owns the material's course may
-    delete it.
+    Only the user who uploaded the material may delete it.
     """
     try:
         material = study_material_service.get_study_material(db, material_id)
-        course_service.require_course_owner(db, material.course_id, current_user)
+        study_material_service.assert_owns_material(current_user, material)
     except ResourceNotFoundError as exc:
         _not_found(exc)
     except AccessDeniedError as exc:
         _forbidden(exc)
 
-    study_material_service.delete_study_material(db, material_id)
+    study_material_service.delete_study_material(
+        db, material_id, knowledge_base=knowledge_base
+    )

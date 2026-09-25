@@ -18,7 +18,7 @@ router = APIRouter(prefix="/api/auth", tags=["Authentication"])
     status_code=status.HTTP_201_CREATED,
 )
 def register(payload: UserRegister, db: Session = Depends(get_db)):
-    """Register a new student account. Teachers cannot be self-assigned."""
+    """Register a new user account. All users share a single role."""
     existing = db.scalar(select(User).where(User.email == payload.email))
     if existing is not None:
         raise HTTPException(
@@ -51,7 +51,7 @@ def login(payload: UserLogin, db: Session = Depends(get_db)):
             headers={"WWW-Authenticate": "Bearer"},
         )
 
-    access_token = create_access_token(user.id, user.role)
+    access_token = create_access_token(user.id)
     return TokenResponse(access_token=access_token)
 
 

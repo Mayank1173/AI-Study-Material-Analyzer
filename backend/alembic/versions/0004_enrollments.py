@@ -1,6 +1,6 @@
 """add course ownership and student enrollment
 
-Revision ID: 0004_course_ownership_and_enrollments
+Revision ID: 0004_enrollments
 Revises: 0003_add_user_auth_fields
 Create Date: 2026-09-13
 
@@ -10,7 +10,7 @@ from typing import Sequence, Union
 import sqlalchemy as sa
 from alembic import op
 
-revision: str = "0004_course_ownership_and_enrollments"
+revision: str = "0004_enrollments"
 down_revision: Union[str, Sequence[str], None] = "0003_add_user_auth_fields"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None

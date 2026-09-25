@@ -4,8 +4,8 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
-# Status lifecycle for study materials. Processing is not implemented yet;
-# uploaded -> processing -> processed/failed is reserved for a future pipeline.
+# Status lifecycle for study materials:
+# uploaded -> processing -> processed | failed, with failed -> processing retries.
 VALID_MATERIAL_STATUSES = ("uploaded", "processing", "processed", "failed")
 MaterialStatus = Literal["uploaded", "processing", "processed", "failed"]
 

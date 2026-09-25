@@ -28,8 +28,8 @@ def _create_material(client, headers, course_id, title, material_type="notes"):
     return response.json()
 
 
-def test_courses_page_one(client, teacher_auth):
-    _, headers = teacher_auth
+def test_courses_page_one(client, user_auth):
+    _, headers = user_auth
     for i in range(25):
         _create_course(client, headers, f"CS{i:03d}", name=f"Course {i}")
 
@@ -43,8 +43,8 @@ def test_courses_page_one(client, teacher_auth):
     assert body["total_pages"] == 3
 
 
-def test_courses_last_page(client, teacher_auth):
-    _, headers = teacher_auth
+def test_courses_last_page(client, user_auth):
+    _, headers = user_auth
     for i in range(25):
         _create_course(client, headers, f"CS{i:03d}", name=f"Course {i}")
 
@@ -55,8 +55,8 @@ def test_courses_last_page(client, teacher_auth):
     assert body["total_pages"] == 3
 
 
-def test_courses_pagination_no_duplicates_across_pages(client, teacher_auth):
-    _, headers = teacher_auth
+def test_courses_pagination_no_duplicates_across_pages(client, user_auth):
+    _, headers = user_auth
     for i in range(15):
         _create_course(client, headers, f"CS{i:03d}", name=f"Course {i}")
 
@@ -73,8 +73,8 @@ def test_courses_pagination_no_duplicates_across_pages(client, teacher_auth):
     assert ids1.isdisjoint(ids2)
 
 
-def test_courses_defaults_to_page_one_size_twenty(client, teacher_auth):
-    _, headers = teacher_auth
+def test_courses_defaults_to_page_one_size_twenty(client, user_auth):
+    _, headers = user_auth
     for i in range(5):
         _create_course(client, headers, f"CS{i:03d}", name=f"Course {i}")
     body = client.get("/api/courses", headers=headers).json()
@@ -84,21 +84,21 @@ def test_courses_defaults_to_page_one_size_twenty(client, teacher_auth):
     assert body["total"] == 5
 
 
-def test_page_size_upper_bound_enforced(client, teacher_auth):
-    _, headers = teacher_auth
+def test_page_size_upper_bound_enforced(client, user_auth):
+    _, headers = user_auth
     _create_course(client, headers, "CS001")
     response = client.get("/api/courses?page_size=101", headers=headers)
     assert response.status_code == 422
 
 
-def test_page_zero_rejected(client, teacher_auth):
-    _, headers = teacher_auth
+def test_page_zero_rejected(client, user_auth):
+    _, headers = user_auth
     response = client.get("/api/courses?page=0", headers=headers)
     assert response.status_code == 422
 
 
-def test_materials_pagination_with_filters(client, teacher_auth):
-    _, headers = teacher_auth
+def test_materials_pagination_with_filters(client, user_auth):
+    _, headers = user_auth
     course_id = _create_course(client, headers, "MATH101", name="Math")
 
     for i in range(3):
@@ -127,8 +127,8 @@ def test_materials_pagination_with_filters(client, teacher_auth):
     assert body["total_pages"] == 2
 
 
-def test_materials_pagination_with_status_filter(client, teacher_auth, db):
-    _, headers = teacher_auth
+def test_materials_pagination_with_status_filter(client, user_auth, db):
+    _, headers = user_auth
     course_id = _create_course(client, headers, "PHY101", name="Physics")
 
     for i in range(4):
@@ -148,8 +148,8 @@ def test_materials_pagination_with_status_filter(client, teacher_auth, db):
     assert body["items"][0]["status"] == "processed"
 
 
-def test_materials_pagination_pages(client, teacher_auth):
-    _, headers = teacher_auth
+def test_materials_pagination_pages(client, user_auth):
+    _, headers = user_auth
     course_id = _create_course(client, headers, "CHE301", name="Chem")
 
     material_ids = [
@@ -175,8 +175,8 @@ def test_materials_pagination_pages(client, teacher_auth):
     assert len(body["items"]) == 2
 
 
-def test_paginated_materials_have_predictable_keys(client, teacher_auth):
-    _, headers = teacher_auth
+def test_paginated_materials_have_predictable_keys(client, user_auth):
+    _, headers = user_auth
     course_id = _create_course(client, headers, "CS404", name="CS")
     _create_material(client, headers, course_id, "Algos")
 

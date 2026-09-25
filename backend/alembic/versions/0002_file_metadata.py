@@ -1,6 +1,6 @@
 """study_materials: add file management metadata columns
 
-Revision ID: 0002_study_material_file_metadata
+Revision ID: 0002_file_metadata
 Revises: 0001_initial_schema
 Create Date: 2026-09-13
 
@@ -10,7 +10,7 @@ from typing import Sequence, Union
 import sqlalchemy as sa
 from alembic import op
 
-revision: str = "0002_study_material_file_metadata"
+revision: str = "0002_file_metadata"
 down_revision: Union[str, Sequence[str], None] = "0001_initial_schema"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None

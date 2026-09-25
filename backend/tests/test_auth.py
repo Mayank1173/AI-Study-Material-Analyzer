@@ -24,7 +24,6 @@ def _expired_token(user_id: uuid.UUID) -> str:
     return jwt.encode(
         {
             "sub": str(user_id),
-            "role": "student",
             "exp": past,
             "iat": past - timedelta(minutes=1),
         },
@@ -51,13 +50,13 @@ def _setup(tmp_path, monkeypatch):
     get_settings.cache_clear()
 
 
-def test_register_valid_student(client, db):
+def test_register_creates_normal_user(client, db):
     response = register_user(client, name="Ravi", email="ravi@example.com")
     assert response.status_code == 201
     body = response.json()
     assert body["name"] == "Ravi"
     assert body["email"] == "ravi@example.com"
-    assert body["role"] == "student"
+    assert "role" not in body
     assert "id" in body
     uuid.UUID(body["id"])
     assert "password" not in body
@@ -92,7 +91,7 @@ def test_register_default_role_is_student(client, db):
     assert user.role == "student"
 
 
-def test_register_cannot_create_teacher(client, db):
+def test_register_ignores_role_claims(client, db):
     response = client.post(
         "/api/auth/register",
         json={
@@ -105,7 +104,7 @@ def test_register_cannot_create_teacher(client, db):
     assert response.status_code == 201
     user = _db_user(db, "sneaky@example.com")
     assert user.role == "student"
-    assert response.json()["role"] == "student"
+    assert "role" not in response.json()
 
 
 def test_register_validates_fields(client):
@@ -192,7 +191,8 @@ def test_me_returns_public_fields(client):
     register_user(client, name="Ravi", email="ravi@example.com")
     headers = make_auth_headers(client, email="ravi@example.com")
     body = client.get("/api/auth/me", headers=headers).json()
-    assert set(body.keys()) == {"id", "name", "email", "role", "created_at"}
+    assert set(body.keys()) == {"id", "name", "email", "created_at"}
+    assert "role" not in body
     assert "password" not in body
     assert "password_hash" not in body
 
@@ -202,18 +202,8 @@ def test_protected_endpoint_without_token_returns_401(client):
     assert client.get("/api/materials").status_code == 401
 
 
-def test_student_cannot_create_course(client, student_auth):
-    _, headers = student_auth
-    response = client.post(
-        "/api/courses",
-        json={"name": "Databases", "code": "CS301"},
-        headers=headers,
-    )
-    assert response.status_code == 403
-
-
-def test_teacher_can_create_course(client, teacher_auth):
-    _, headers = teacher_auth
+def test_any_authenticated_user_can_create_course(client, user_auth):
+    _, headers = user_auth
     response = client.post(
         "/api/courses",
         json={"name": "Databases", "code": "CS301"},
@@ -222,23 +212,8 @@ def test_teacher_can_create_course(client, teacher_auth):
     assert response.status_code == 201
 
 
-def test_student_cannot_upload_material(client, student_auth):
-    _, headers = student_auth
-    response = client.post(
-        "/api/materials/upload",
-        data={
-            "course_id": str(uuid.uuid4()),
-            "title": "Notes",
-            "material_type": "notes",
-        },
-        files={"file": ("notes.pdf", b"%PDF-1.4 fake", "application/pdf")},
-        headers=headers,
-    )
-    assert response.status_code == 403
-
-
-def test_teacher_can_upload_material(client, _setup, teacher_auth):
-    _, headers = teacher_auth
+def test_any_user_can_upload_material(client, _setup, user_auth):
+    _, headers = user_auth
     course_id = _make_course(client, headers)
     response = client.post(
         "/api/materials/upload",
@@ -253,8 +228,8 @@ def test_teacher_can_upload_material(client, _setup, teacher_auth):
     assert response.status_code == 201
 
 
-def test_upload_uses_authenticated_user_id(client, _setup, teacher_auth):
-    user_id, headers = teacher_auth
+def test_upload_uses_authenticated_user_id(client, _setup, user_auth):
+    user_id, headers = user_auth
     course_id = _make_course(client, headers)
     response = client.post(
         "/api/materials/upload",
@@ -265,13 +240,13 @@ def test_upload_uses_authenticated_user_id(client, _setup, teacher_auth):
         },
         files={"file": ("notes.pdf", b"%PDF-1.4 fake", "application/pdf")},
         headers=headers,
-)
+    )
     assert response.status_code == 201
     assert response.json()["uploaded_by"] == str(user_id)
 
 
-def test_client_cannot_impersonate_uploader(client, _setup, teacher_auth):
-    user_id, headers = teacher_auth
+def test_client_cannot_impersonate_uploader(client, _setup, user_auth):
+    user_id, headers = user_auth
     other_id = str(uuid.uuid4())
     course_id = _make_course(client, headers)
     response = client.post(
@@ -291,8 +266,8 @@ def test_client_cannot_impersonate_uploader(client, _setup, teacher_auth):
 
 
 def test_unauthorized_material_deletion_returns_403(client, _setup):
-    owner = make_db_user(name="Owner", email="owner@example.com", role="teacher")
-    other = make_db_user(name="Other", email="other@example.com", role="teacher")
+    owner = make_db_user(name="Owner", email="owner@example.com")
+    other = make_db_user(name="Other", email="other@example.com")
     owner_headers = auth_headers_for(owner)
     other_headers = auth_headers_for(other)
 

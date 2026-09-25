@@ -16,10 +16,6 @@ class AccessDeniedError(Exception):
     pass
 
 
-class EnrollmentNotFoundError(Exception):
-    pass
-
-
 class UnsupportedFileTypeError(Exception):
     pass
 

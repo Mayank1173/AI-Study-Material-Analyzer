@@ -24,7 +24,6 @@ from app.schemas.chat import (
     SummaryResponse,
 )
 from rag.answer import AnswerResult, answer_question
-from rag.conversation import ConversationStore, ConversationTurn
 from rag.knowledge_base import KnowledgeBase, get_knowledge_base
 from rag.llm import LLMProvider, MockProvider, OllamaProvider
 from rag.summary import generate_study_summary
@@ -32,20 +31,6 @@ from rag.summary import generate_study_summary
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/chat", tags=["Chat"])
-
-# Process-local bounded conversation store. Requests that carry a
-# conversation_id participate in follow-up reference resolution; those that do
-# not keep the exact previous stateless behaviour. Ownership is enforced on
-# every read, so a user can never see another user's conversation.
-_conversation_store = ConversationStore()
-
-
-def get_conversation_store() -> ConversationStore:
-    """Dependency returning the conversation store.
-
-    Overridable in tests to isolate conversations per test case.
-    """
-    return _conversation_store
 
 
 def get_llm_provider() -> LLMProvider:
@@ -107,7 +92,6 @@ def chat(
     current_user: User = Depends(get_current_active_user),
     kb: KnowledgeBase = Depends(_get_kb),
     llm: LLMProvider = Depends(get_llm_provider),
-    store: ConversationStore = Depends(get_conversation_store),
 ) -> ChatResponse:
     """Answer a question using the user's indexed study materials.
 
@@ -116,17 +100,8 @@ def chat(
     - ``user_id`` is taken from the JWT, never from the request body.
     - KnowledgeBase.search receives the authenticated user's id, enforcing
       multi-tenant isolation.
-    - Conversation history (when a ``conversation_id`` is supplied) is only
-      read for the authenticated user. A foreign id yields a fresh, empty
-      conversation owned by the requesting user, so a user can never read
-      another user's turns.
     """
     user_id = str(current_user.id)
-
-    history: list[ConversationTurn] = []
-    if body.conversation_id:
-        conversation = store.ensure(body.conversation_id, user_id=user_id)
-        history = conversation.history()
 
     try:
         settings = get_settings()
@@ -138,22 +113,12 @@ def chat(
             course_id=body.course_id,
             material_id=body.material_id,
             max_tokens=settings.llm_max_tokens,
-            history=history,
         )
     except Exception:
         logger.exception("RAG answer_question failed")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Failed to generate an answer. Please try again later.",
-        )
-
-    if body.conversation_id:
-        store.record_turn(
-            body.conversation_id,
-            user_id=user_id,
-            user_message=body.message,
-            resolved_query=result.resolved_query or body.message,
-            assistant_answer=result.answer,
         )
 
     return ChatResponse(

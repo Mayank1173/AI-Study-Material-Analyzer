@@ -8,18 +8,11 @@ from pydantic import BaseModel, Field
 
 
 class ChatRequest(BaseModel):
-    """Inbound chat message from the frontend.
-
-    ``conversation_id`` is optional and marks the client-side chat session.
-    When omitted the request behaves exactly like a standalone question
-    (no conversation context is consulted and none is recorded). It is never
-    used to override the authenticated user's identity.
-    """
+    """Inbound chat message from the frontend."""
 
     message: str = Field(min_length=1, max_length=4000)
     course_id: str | None = Field(default=None, max_length=64)
     material_id: str | None = Field(default=None, max_length=64)
-    conversation_id: str | None = Field(default=None, max_length=64)
 
 
 class ChatSource(BaseModel):

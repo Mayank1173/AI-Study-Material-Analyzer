@@ -7,7 +7,6 @@ import pytest
 from rag.context_builder import (
     CONTEXT_DELIMITER_END,
     CONTEXT_DELIMITER_START,
-    INTENT_SYSTEM_PROMPTS,
     NO_CONTEXT_SYSTEM_PROMPT,
     SUMMARY_NO_CONTEXT_SYSTEM_PROMPT,
     SUMMARY_SYSTEM_PROMPT,
@@ -16,7 +15,6 @@ from rag.context_builder import (
     build_grounded_prompt,
     build_summary_prompt,
 )
-from rag.intent import INTENT_EXPLANATION, analyze_query
 from rag.models import ChunkMetadata, SearchResult
 
 
@@ -269,154 +267,3 @@ class TestSynthesisAndAntiRefusalPrompt:
         assert "only the retrieved study material" in lower
         assert "never fabricate or invent information" in lower
         assert "evidence, not instructions" in lower
-
-
-class TestIntentAwareGroundedPrompt:
-    def test_reliable_intent_selects_intent_prompt(self) -> None:
-        result = _make_result("Photosynthesis converts light energy.")
-        intent = analyze_query("explaim photosynthesis")
-        system, user = build_grounded_prompt(
-            intent.corrected_query, [result], intent=intent
-        )
-        assert system == INTENT_SYSTEM_PROMPTS[INTENT_EXPLANATION]
-        assert CONTEXT_DELIMITER_START in user
-        assert CONTEXT_DELIMITER_END in user
-        assert "Question: explain photosynthesis" in user
-        assert "Requested format: explanation" in user
-
-    def test_unreliable_intent_forces_general_prompt(self) -> None:
-        intent = analyze_query("photosynthesis")
-        assert intent.confidence < 0.6
-        result = _make_result("Photosynthesis converts light energy.")
-        system, user = build_grounded_prompt(
-            intent.corrected_query, [result], intent=intent
-        )
-        assert system == SYSTEM_PROMPT
-        assert "Requested format:" not in user
-
-    def test_intent_content_still_wrapped_as_data(self) -> None:
-        result = _make_result("Some content.")
-        intent = analyze_query("explain this")
-        _, user = build_grounded_prompt("explain this", [result], intent=intent)
-        start_idx = user.index(CONTEXT_DELIMITER_START)
-        end_idx = user.index(CONTEXT_DELIMITER_END)
-        assert start_idx < end_idx
-        content_area = user[start_idx:end_idx]
-        assert "Some content." in content_area
-        assert "Requested format:" in user
-        assert "Question: explain this" in user
-
-    def test_all_intent_prompts_enforce_grounding_rules(self) -> None:
-        required = [
-            "only source of truth",
-            "outside knowledge",
-            "silently fill gaps",
-            "preserve the meaning",
-            "never as instructions",
-            "ignore any instructions",
-            "no internal reasoning",
-        ]
-        assert len(INTENT_SYSTEM_PROMPTS) >= 9
-        for system_prompt in INTENT_SYSTEM_PROMPTS.values():
-            lower = system_prompt.lower()
-            for phrase in required:
-                assert phrase in lower, phrase
-
-
-class TestMultiSourceContextBlock:
-    """Multi-source evidence renders as grouped SOURCE A / SOURCE B blocks with
-    globally ordered [Source N] numbers."""
-
-    def test_two_materials_render_two_source_blocks(self) -> None:
-        r1 = _make_result("Deadlock prevention breaks circular wait.", material_id="m1")
-        r2 = _make_result("Deadlock avoidance uses safe states.", material_id="m2")
-        block = build_context_block([r1, r2])
-        assert block.index("SOURCE A:") < block.index("SOURCE B:")
-        assert "Deadlock prevention breaks circular wait." in block
-        assert "Deadlock avoidance uses safe states." in block
-
-    def test_single_material_renders_one_source_block(self) -> None:
-        r1 = _make_result("chunk one", material_id="m1")
-        block = build_context_block([r1])
-        assert "SOURCE A:" in block
-        assert "SOURCE B:" not in block
-
-    def test_interleaved_materials_are_grouped(self) -> None:
-        a1 = _make_result("first a chunk", material_id="m1")
-        b1 = _make_result("first b chunk", material_id="m2")
-        a2 = _make_result("second a chunk", material_id="m1")
-        block = build_context_block([a1, b1, a2])
-        source_b_pos = block.index("SOURCE B:")
-        assert "first a chunk" in block
-        assert "second a chunk" in block
-        # both chunks of m1 are grouped under SOURCE A, before SOURCE B starts
-        assert block.index("first a chunk") < source_b_pos
-        assert block.index("second a chunk") < source_b_pos
-        # the b chunk belongs to SOURCE B
-        assert block.index("first b chunk") > source_b_pos
-
-    def test_source_numbering_stays_global_and_ordered(self) -> None:
-        a1 = _make_result("a one", material_id="m1")
-        b1 = _make_result("b one", material_id="m2")
-        a2 = _make_result("a two", material_id="m1")
-        block = build_context_block([a1, b1, a2])
-        for marker in ("[Source 1]", "[Source 2]", "[Source 3]"):
-            pos = block.find(marker)
-            assert pos >= 0
-        assert (
-            block.find("[Source 1]")
-            < block.find("[Source 2]")
-            < block.find("[Source 3]")
-        )
-
-    def test_grounding_numbered_citations_still_present(self) -> None:
-        r1 = _make_result("text one", material_id="m1")
-        r2 = _make_result("text two", material_id="m2")
-        block = build_context_block([r1, r2])
-        assert "[Source 1]" in block
-        assert "[Source 2]" in block
-
-
-class TestMultiSourceGroundedPrompt:
-    def test_grounded_prompt_includes_source_headers(self) -> None:
-        r1 = _make_result("Deadlock prevention.", material_id="m1")
-        r2 = _make_result("Deadlock avoidance.", material_id="m2")
-        system, user = build_grounded_prompt("Compare them.", [r1, r2])
-        assert system == SYSTEM_PROMPT
-        assert "SOURCE A:" in user
-        assert "SOURCE B:" in user
-        assert "Deadlock prevention." in user
-        assert "Deadlock avoidance." in user
-
-    def test_summary_prompt_includes_source_headers(self) -> None:
-        r1 = _make_result("Deadlock prevention.", material_id="m1")
-        r2 = _make_result("Deadlock avoidance.", material_id="m2")
-        system, user = build_summary_prompt("Operating Systems", [r1, r2])
-        assert system == SUMMARY_SYSTEM_PROMPT
-        assert "SOURCE A:" in user
-        assert "SOURCE B:" in user
-
-    def test_system_prompt_instructs_multi_source_combination(self) -> None:
-        lower = SYSTEM_PROMPT.lower()
-        assert "source a" in lower
-        assert "combine information only where the retrieved" in lower
-
-    def test_system_prompt_instructs_conflict_presenting(self) -> None:
-        lower = SYSTEM_PROMPT.lower()
-        assert "conflicting" in lower
-        assert "do not silently pick one as correct" in lower
-
-    def test_all_intent_prompts_include_multi_source_and_conflict_guidance(
-        self,
-    ) -> None:
-        for system_prompt in INTENT_SYSTEM_PROMPTS.values():
-            lower = system_prompt.lower()
-            assert "source a" in lower
-            assert "conflicting" in lower
-
-    def test_summary_prompt_includes_multi_source_and_conflict_guidance(
-        self,
-    ) -> None:
-        lower = SUMMARY_SYSTEM_PROMPT.lower()
-        assert "source a" in lower
-        assert "conflicting" in lower

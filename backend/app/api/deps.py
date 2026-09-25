@@ -73,27 +73,3 @@ def get_current_active_user(
 ) -> User:
     """Placeholder for future active/disabled checks; returns the user."""
     return current_user
-
-
-def require_teacher(
-    current_user: User = Depends(get_current_user),
-) -> User:
-    """Return the user only when they hold the teacher role."""
-    if current_user.role != "teacher":
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Teacher access required",
-        )
-    return current_user
-
-
-def require_student(
-    current_user: User = Depends(get_current_user),
-) -> User:
-    """Return the user only when they hold the student role."""
-    if current_user.role != "student":
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Student access required",
-        )
-    return current_user

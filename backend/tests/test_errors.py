@@ -4,13 +4,15 @@ import uuid
 import pytest
 from sqlalchemy.exc import OperationalError
 
+from tests.conftest import auth_headers_for, make_db_user
+
 
 def _error_body(response):
     return response.json().get("error", {})
 
 
-def test_missing_course_returns_404_envelope(client, teacher_auth):
-    _, headers = teacher_auth
+def test_missing_course_returns_404_envelope(client, user_auth):
+    _, headers = user_auth
     response = client.get(f"/api/courses/{uuid.uuid4()}", headers=headers)
     assert response.status_code == 404
     error = _error_body(response)
@@ -19,8 +21,8 @@ def test_missing_course_returns_404_envelope(client, teacher_auth):
     assert "detail" in response.json()
 
 
-def test_missing_material_returns_404_envelope(client, teacher_auth):
-    _, headers = teacher_auth
+def test_missing_material_returns_404_envelope(client, user_auth):
+    _, headers = user_auth
     response = client.get(f"/api/materials/{uuid.uuid4()}", headers=headers)
     assert response.status_code == 404
     assert _error_body(response)["code"] == "RESOURCE_NOT_FOUND"
@@ -32,19 +34,36 @@ def test_unauthorized_returns_401_envelope(client):
     assert _error_body(response)["code"] == "UNAUTHORIZED"
 
 
-def test_forbidden_returns_403_envelope(client, student_auth):
-    _, headers = student_auth
-    response = client.post(
+def test_forbidden_returns_403_envelope(client):
+    # Cross-user material access produces a FORBIDDEN envelope: materials are
+    # private to the uploader.
+    owner = make_db_user(name="Owner", email="owner@example.com")
+    other = make_db_user(name="Other", email="other@example.com")
+    owner_headers = auth_headers_for(owner)
+    other_headers = auth_headers_for(other)
+
+    course_id = client.post(
         "/api/courses",
         json={"name": "Databases", "code": "CS301"},
-        headers=headers,
-    )
+        headers=owner_headers,
+    ).json()["id"]
+    material_id = client.post(
+        "/api/materials",
+        json={
+            "course_id": course_id,
+            "title": "Notes",
+            "material_type": "notes",
+        },
+        headers=owner_headers,
+    ).json()["id"]
+
+    response = client.get(f"/api/materials/{material_id}", headers=other_headers)
     assert response.status_code == 403
     assert _error_body(response)["code"] == "FORBIDDEN"
 
 
-def test_duplicate_resource_returns_409_envelope(client, teacher_auth):
-    _, headers = teacher_auth
+def test_duplicate_resource_returns_409_envelope(client, user_auth):
+    _, headers = user_auth
 
     def create():
         return client.post(
@@ -70,8 +89,8 @@ def test_validation_error_returns_422_envelope(client):
     assert isinstance(response.json()["detail"], list)
 
 
-def test_invalid_material_status_rejected(client, teacher_auth):
-    _, headers = teacher_auth
+def test_invalid_material_status_rejected(client, user_auth):
+    _, headers = user_auth
     course_id = client.post(
         "/api/courses",
         json={"name": "Databases", "code": "CS301"},
@@ -91,8 +110,8 @@ def test_invalid_material_status_rejected(client, teacher_auth):
     assert _error_body(response)["code"] == "VALIDATION_ERROR"
 
 
-def test_error_responses_do_not_leak_secrets(client, teacher_auth):
-    _, headers = teacher_auth
+def test_error_responses_do_not_leak_secrets(client, user_auth):
+    _, headers = user_auth
 
     responses = [
         client.get(f"/api/courses/{uuid.uuid4()}", headers=headers),
@@ -126,7 +145,7 @@ def test_error_responses_do_not_leak_secrets(client, teacher_auth):
         assert "sqlalchemy" not in text
 
 
-def test_database_failure_returns_json_envelope(client, teacher_auth, monkeypatch):
+def test_database_failure_returns_json_envelope(client, user_auth, monkeypatch):
     from app.api.routes import courses as course_routes
 
     def _boom(*args, **kwargs):
@@ -134,7 +153,7 @@ def test_database_failure_returns_json_envelope(client, teacher_auth, monkeypatc
 
     monkeypatch.setattr(course_routes.course_service, "list_courses", _boom)
 
-    _, headers = teacher_auth
+    _, headers = user_auth
     response = client.get("/api/courses", headers=headers)
     assert response.status_code == 500
     body = response.json()
@@ -147,7 +166,7 @@ def test_database_failure_returns_json_envelope(client, teacher_auth, monkeypatc
     assert "password" not in text
 
 
-def test_storage_failure_returns_json_envelope(client, teacher_auth, monkeypatch):
+def test_storage_failure_returns_json_envelope(client, user_auth, monkeypatch):
     from app.api.routes import materials as material_routes
 
     def _boom(*args, **kwargs):
@@ -157,7 +176,7 @@ def test_storage_failure_returns_json_envelope(client, teacher_auth, monkeypatch
         material_routes.study_material_service, "get_study_material", _boom
     )
 
-    _, headers = teacher_auth
+    _, headers = user_auth
     response = client.get(f"/api/materials/{uuid.uuid4()}", headers=headers)
     assert response.status_code == 500
     body = response.json()

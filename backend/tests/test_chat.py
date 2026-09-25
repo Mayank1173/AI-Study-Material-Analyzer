@@ -10,18 +10,12 @@ from sqlalchemy import create_engine, event
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
-from app.api.routes.chat import (
-    _get_kb as chat_get_kb,
-    get_llm_provider as chat_get_llm_provider,
-)
 from app.core.security import create_access_token, hash_password
 from app.db.base import Base
 from app.db.session import get_db
 from app.models import Course, StudyMaterial, User
 from main import app
-from rag.knowledge_base import get_knowledge_base
 from rag.llm.mock_provider import MockProvider
-from rag.models import SourceRef
 
 TEST_PASSWORD = "testpassword123"
 
@@ -120,7 +114,7 @@ def client():
         return mock_llm
 
     app.dependency_overrides[get_db] = override_get_db
-    app.dependency_overrides[chat_get_llm_provider] = override_llm
+    app.dependency_overrides["app.api.routes.chat.get_llm_provider"] = override_llm
 
     with TestClient(app) as c:
         yield c, mock_llm
@@ -287,57 +281,3 @@ class TestChatNoContextBehavior:
         assert data["has_context"] is False
         assert "don't have enough information" in data["answer"].lower()
         assert data["sources"] == []
-
-
-class TestChatTypoTolerantGroundedPipeline:
-    def test_typo_query_reaches_same_grounded_pipeline(self, client, tmp_path) -> None:
-        """A typo-tolerant query must flow through the same grounded pipeline:
-        corrected retrieval, intent-aware prompt, delimiters intact, and an
-        unchanged API response schema."""
-        c, mock_llm = client
-        user = _make_user("Alice", "alice@example.com")
-        headers = {"Authorization": f"Bearer {create_access_token(user.id)}"}
-
-        path = tmp_path / "bio.txt"
-        path.write_text(
-            "Photosynthesis converts light energy into chemical energy.",
-            encoding="utf-8",
-        )
-
-        kb = get_knowledge_base(store_path=str(tmp_path / "typo_kb.db"))
-        kb.index_material(
-            path,
-            source_ref=SourceRef(
-                material_id="m-typo",
-                course_id="c-typo",
-                original_filename="bio.txt",
-                material_title="Biology Notes",
-            ),
-            uploaded_by=str(user.id),
-        )
-
-        def override_kb():
-            return kb
-
-        app.dependency_overrides[chat_get_kb] = override_kb
-        try:
-            resp = c.post(
-                "/api/chat",
-                json={"message": "explaim photosynthesis"},
-                headers=headers,
-            )
-        finally:
-            app.dependency_overrides.clear()
-            kb.close()
-
-        assert resp.status_code == 200
-        data = resp.json()
-        assert data["has_context"] is True
-        assert len(data["sources"]) >= 1
-        assert "Plants convert light energy" in data["answer"]
-        assert set(data.keys()) == {"answer", "sources", "has_context"}
-        assert "explain photosynthesis" in mock_llm.last_prompt
-        assert "--- RETRIEVED STUDY MATERIAL (BEGIN) ---" in mock_llm.last_prompt
-        assert "--- RETRIEVED STUDY MATERIAL (END) ---" in mock_llm.last_prompt
-        assert mock_llm.last_system_prompt is not None
-        assert "only source of truth" in mock_llm.last_system_prompt

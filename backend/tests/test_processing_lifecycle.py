@@ -1,10 +1,11 @@
 """Material processing-lifecycle tests.
 
-Processing itself is not implemented; these tests cover the data/API contract
-a future processing worker and the frontend rely on: status transitions,
-processing timestamps, failure messages, and pending-material discovery.
+Tests cover the data/API contract for status transitions, processing
+timestamps, failure messages, pending-material discovery, and the real
+integration between backend processing and the RAG knowledge base.
 """
 import uuid
+from io import BytesIO
 
 import pytest
 from sqlalchemy import select
@@ -12,10 +13,10 @@ from sqlalchemy import select
 from app.models import Course, StudyMaterial, User
 from app.schemas.course import CourseCreate
 from app.services import course_service, study_material_service
-from tests.conftest import auth_headers_for, make_db_user
+from tests.conftest import make_db_user
 
 
-def _course_for_teacher(client, headers, code="CS301"):
+def _create_course(client, headers, code="CS301"):
     response = client.post(
         "/api/courses",
         json={"name": "Databases", "code": code},
@@ -39,6 +40,18 @@ def _create_material(client, headers, course_id, title="Notes"):
     return response.json()
 
 
+def _upload_material(client, headers, course_id, filename="notes.txt", content=b"Hello world", title="Uploaded Notes"):
+    data = {
+        "course_id": course_id,
+        "title": title,
+        "material_type": "notes",
+    }
+    files = {"file": (filename, BytesIO(content), "text/plain")}
+    response = client.post("/api/materials/upload", data=data, files=files, headers=headers)
+    assert response.status_code == 201
+    return response.json()
+
+
 def _material_row(db, material_id):
     return db.get(StudyMaterial, uuid.UUID(material_id))
 
@@ -46,21 +59,22 @@ def _material_row(db, material_id):
 # ---------------- Default metadata ----------------
 
 
-def test_created_material_has_empty_processing_fields(client, teacher_auth):
-    _, headers = teacher_auth
-    course_id = _course_for_teacher(client, headers)
+def test_created_material_has_empty_processing_fields(client, user_auth):
+    _, headers = user_auth
+    course_id = _create_course(client, headers)
     body = _create_material(client, headers, course_id)
     assert body["status"] == "uploaded"
     assert body["processed_at"] is None
     assert body["error_message"] is None
 
 
-# ---------------- POST /api/materials/{id}/process ----------------
+# ---------------- POST /api/materials/{id}/process (no stored file) ----------------
 
 
-def test_teacher_can_start_processing(client, teacher_auth, db):
-    _, headers = teacher_auth
-    course_id = _course_for_teacher(client, headers)
+def test_process_material_without_stored_file_fails(client, user_auth, db):
+    """A material created via the JSON endpoint has no stored file and fails."""
+    _, headers = user_auth
+    course_id = _create_course(client, headers)
     material_id = _create_material(client, headers, course_id)["id"]
 
     response = client.post(
@@ -68,34 +82,72 @@ def test_teacher_can_start_processing(client, teacher_auth, db):
     )
     assert response.status_code == 200
     body = response.json()
-    assert body["status"] == "processing"
-    assert body["processed_at"] is None
-    assert body["error_message"] is None
-    assert _material_row(db, material_id).status == "processing"
+    assert body["status"] == "failed"
+    assert "no stored file" in body["error_message"].lower()
 
 
-def test_teacher_can_retry_failed_material(client, teacher_auth, db):
-    _, headers = teacher_auth
-    course_id = _course_for_teacher(client, headers)
-    material_id = _create_material(client, headers, course_id)["id"]
+# ---------------- Real file processing ----------------
 
-    row = _material_row(db, material_id)
+
+def test_owner_can_upload_and_process(client, user_auth, db, tmp_path, monkeypatch):
+    """Upload a real TXT file and process it into the RAG knowledge base."""
+    monkeypatch.setenv("STORAGE_DIR", str(tmp_path / "storage"))
+    from app.core.config import get_settings
+    get_settings.cache_clear()
+
+    _, headers = user_auth
+    course_id = _create_course(client, headers)
+    body = _upload_material(
+        client, headers, course_id,
+        filename="notes.txt",
+        content=b"Photosynthesis converts light energy into chemical energy.",
+        title="Biology Notes",
+    )
+    assert body["status"] == "uploaded"
+
+    response = client.post(
+        f"/api/materials/{body['id']}/process", headers=headers
+    )
+    assert response.status_code == 200
+    result = response.json()
+    assert result["status"] == "processed"
+    assert result["processed_at"] is not None
+    assert result["error_message"] is None
+    get_settings.cache_clear()
+
+
+def test_retry_failed_material_succeeds(client, user_auth, db, tmp_path, monkeypatch):
+    """A failed material can be retried and succeeds on second attempt."""
+    monkeypatch.setenv("STORAGE_DIR", str(tmp_path / "storage"))
+    from app.core.config import get_settings
+    get_settings.cache_clear()
+
+    _, headers = user_auth
+    course_id = _create_course(client, headers)
+    body = _upload_material(client, headers, course_id, filename="notes.txt", content=b"Test content")
+
+    # Simulate failure by setting status to failed
+    row = _material_row(db, body["id"])
     row.status = "failed"
-    row.error_message = "The file could not be parsed"
+    row.error_message = "Previous error"
     db.commit()
 
     response = client.post(
-        f"/api/materials/{material_id}/process", headers=headers
+        f"/api/materials/{body['id']}/process", headers=headers
     )
     assert response.status_code == 200
-    body = response.json()
-    assert body["status"] == "processing"
-    assert body["error_message"] is None
+    result = response.json()
+    assert result["status"] == "processed"
+    assert result["error_message"] is None
+    get_settings.cache_clear()
 
 
-def test_cannot_process_material_already_processed(client, teacher_auth, db):
-    _, headers = teacher_auth
-    course_id = _course_for_teacher(client, headers)
+# ---------------- Invalid transitions remain protected ----------------
+
+
+def test_cannot_process_material_already_processed(client, user_auth, db):
+    _, headers = user_auth
+    course_id = _create_course(client, headers)
     material_id = _create_material(client, headers, course_id)["id"]
     _material_row(db, material_id).status = "processed"
     db.commit()
@@ -106,14 +158,11 @@ def test_cannot_process_material_already_processed(client, teacher_auth, db):
     assert response.status_code == 409
 
 
-def test_non_owner_teacher_cannot_process(client):
-    owner = make_db_user(name="Owner", email="owner@example.com", role="teacher")
-    other = make_db_user(name="Other", email="other@example.com", role="teacher")
-    owner_headers = auth_headers_for(owner)
-    other_headers = auth_headers_for(other)
-
-    course_id = _course_for_teacher(client, owner_headers)
-    material_id = _create_material(client, owner_headers, course_id)["id"]
+def test_another_user_cannot_process_material(client, user_auth, second_user_auth, db):
+    _, headers = user_auth
+    _, other_headers = second_user_auth
+    course_id = _create_course(client, headers)
+    material_id = _create_material(client, headers, course_id)["id"]
 
     response = client.post(
         f"/api/materials/{material_id}/process", headers=other_headers
@@ -121,47 +170,112 @@ def test_non_owner_teacher_cannot_process(client):
     assert response.status_code == 403
 
 
-def test_student_cannot_process(client, teacher_auth, student_auth):
-    _, teacher_headers = teacher_auth
-    _, student_headers = student_auth
-    course_id = _course_for_teacher(client, teacher_headers)
-    material_id = _create_material(client, teacher_headers, course_id)["id"]
-
-    response = client.post(
-        f"/api/materials/{material_id}/process", headers=student_headers
-    )
-    assert response.status_code == 403
-
-
-def test_process_missing_material_returns_404(client, teacher_auth):
-    _, headers = teacher_auth
+def test_process_missing_material_returns_404(client, user_auth):
+    _, headers = user_auth
     response = client.post(
         f"/api/materials/{uuid.uuid4()}/process", headers=headers
     )
     assert response.status_code == 404
 
 
-def test_process_requires_authentication(client, teacher_auth):
-    _, headers = teacher_auth
-    course_id = _course_for_teacher(client, headers)
+def test_process_requires_authentication(client, user_auth):
+    _, headers = user_auth
+    course_id = _create_course(client, headers)
     material_id = _create_material(client, headers, course_id)["id"]
     assert (
         client.post(f"/api/materials/{material_id}/process").status_code == 401
     )
 
 
+# ---------------- Unsupported file types ----------------
+
+
+def test_unsupported_format_rejected_at_upload(client, user_auth):
+    """Images such as .png are rejected at upload time (415), not stored."""
+    _, headers = user_auth
+    course_id = _create_course(client, headers)
+    response = client.post(
+        "/api/materials/upload",
+        data={
+            "course_id": course_id,
+            "title": "Diagram",
+            "material_type": "notes",
+        },
+        files={"file": ("diagram.png", b"\x89PNG fake bytes", "image/png")},
+        headers=headers,
+    )
+    assert response.status_code == 415
+
+
+def test_corrupt_pdf_processing_fails(client, user_auth, db, tmp_path, monkeypatch):
+    """A file with an allowed extension that cannot be parsed results in failed."""
+    monkeypatch.setenv("STORAGE_DIR", str(tmp_path / "storage"))
+    from app.core.config import get_settings
+    get_settings.cache_clear()
+
+    _, headers = user_auth
+    course_id = _create_course(client, headers)
+    body = _upload_material(
+        client,
+        headers,
+        course_id,
+        filename="broken.pdf",
+        content=b"%PDF-1.4 this is not a real pdf",
+        title="Broken Notes",
+    )
+    assert body["status"] == "uploaded"
+
+    response = client.post(
+        f"/api/materials/{body['id']}/process", headers=headers
+    )
+    assert response.status_code == 200
+    result = response.json()
+    assert result["status"] == "failed"
+    assert result["error_message"]
+    get_settings.cache_clear()
+
+
+# ---------------- URL material processing ----------------
+
+
+def test_url_material_processing_fails(client, user_auth, db):
+    """A URL-only material has no stored file and fails processing."""
+    _, headers = user_auth
+    course_id = _create_course(client, headers)
+    response = client.post(
+        "/api/materials/upload",
+        data={
+            "course_id": course_id,
+            "title": "Web Notes",
+            "material_type": "notes",
+            "source_url": "https://example.com/notes.pdf",
+        },
+        headers=headers,
+    )
+    assert response.status_code == 201
+    body = response.json()
+
+    response = client.post(
+        f"/api/materials/{body['id']}/process", headers=headers
+    )
+    assert response.status_code == 200
+    result = response.json()
+    assert result["status"] == "failed"
+    assert "no stored file" in result["error_message"].lower()
+
+
 # ---------------- Status filter validation ----------------
 
 
-def test_invalid_status_filter_rejected(client, teacher_auth):
-    _, headers = teacher_auth
+def test_invalid_status_filter_rejected(client, user_auth):
+    _, headers = user_auth
     response = client.get("/api/materials?status=bogus", headers=headers)
     assert response.status_code == 422
     assert response.json()["error"]["code"] == "VALIDATION_ERROR"
 
 
-def test_valid_status_filters_accepted(client, teacher_auth):
-    _, headers = teacher_auth
+def test_valid_status_filters_accepted(client, user_auth):
+    _, headers = user_auth
     for status in ("uploaded", "processing", "processed", "failed"):
         response = client.get(
             f"/api/materials?status={status}", headers=headers
@@ -173,27 +287,27 @@ def test_valid_status_filters_accepted(client, teacher_auth):
 
 
 def _seed_material(db_session, *, status="uploaded", error_message=None):
-    """Create a minimal teacher -> course -> material chain for service tests."""
-    teacher = User(
-        name="Prof. Contract",
+    """Create a minimal user -> course -> material chain for service tests."""
+    user = User(
+        name="Contract User",
         email=f"contract_{uuid.uuid4().hex[:8]}@example.com",
-        role="teacher",
+        role="student",
     )
-    db_session.add(teacher)
+    db_session.add(user)
     db_session.commit()
-    db_session.refresh(teacher)
+    db_session.refresh(user)
 
     course = course_service.create_course(
         db_session,
         CourseCreate(
             name="Contract Course", code=f"CT{uuid.uuid4().hex[:6]}"
         ),
-        teacher_id=teacher.id,
+        owner_id=user.id,
     )
 
     material = StudyMaterial(
         course_id=course.id,
-        uploaded_by=teacher.id,
+        uploaded_by=user.id,
         title="Contract Notes",
         material_type="notes",
         status=status,
@@ -258,9 +372,9 @@ def test_service_failure_message_truncated(db_session):
 # ---------------- Response exposes processing fields ----------------
 
 
-def test_response_exposes_failure_information(client, teacher_auth, db):
-    _, headers = teacher_auth
-    course_id = _course_for_teacher(client, headers)
+def test_response_exposes_failure_information(client, user_auth, db):
+    _, headers = user_auth
+    course_id = _create_course(client, headers)
     material_id = _create_material(client, headers, course_id)["id"]
     _material_row(db, material_id).status = "failed"
     db.commit()
@@ -274,9 +388,9 @@ def test_response_exposes_failure_information(client, teacher_auth, db):
     assert body["error_message"] is None
 
 
-def test_pending_material_visible_via_status_filter(client, teacher_auth, db):
-    _, headers = teacher_auth
-    course_id = _course_for_teacher(client, headers)
+def test_pending_material_visible_via_status_filter(client, user_auth, db):
+    _, headers = user_auth
+    course_id = _create_course(client, headers)
     material_id = _create_material(client, headers, course_id)["id"]
     _material_row(db, material_id).status = "processing"
     db.commit()

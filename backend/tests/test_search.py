@@ -29,8 +29,8 @@ def _setup(tmp_path, monkeypatch):
     get_settings.cache_clear()
 
 
-def test_course_search_matches_name(client, teacher_auth):
-    _, headers = teacher_auth
+def test_course_search_matches_name(client, user_auth):
+    _, headers = user_auth
     _create_course(client, headers, "CS301", "Introduction to Databases")
 
     response = client.get("/api/courses?search=databases", headers=headers)
@@ -40,8 +40,8 @@ def test_course_search_matches_name(client, teacher_auth):
     assert items[0]["code"] == "CS301"
 
 
-def test_course_search_matches_code(client, teacher_auth):
-    _, headers = teacher_auth
+def test_course_search_matches_code(client, user_auth):
+    _, headers = user_auth
     _create_course(client, headers, "CS301", "Databases")
     _create_course(client, headers, "MATH201", "Linear Algebra")
 
@@ -50,8 +50,8 @@ def test_course_search_matches_code(client, teacher_auth):
     assert [c["code"] for c in items] == ["CS301"]
 
 
-def test_course_search_is_case_insensitive(client, teacher_auth):
-    _, headers = teacher_auth
+def test_course_search_is_case_insensitive(client, user_auth):
+    _, headers = user_auth
     _create_course(client, headers, "PHY101", "Physics for Engineers")
 
     for term in ("PHYSICS", "physics", "Physics"):
@@ -59,8 +59,8 @@ def test_course_search_is_case_insensitive(client, teacher_auth):
         assert response.json()["total"] == 1, term
 
 
-def test_course_search_no_match(client, teacher_auth):
-    _, headers = teacher_auth
+def test_course_search_no_match(client, user_auth):
+    _, headers = user_auth
     _create_course(client, headers, "CS301", "Databases")
 
     response = client.get("/api/courses?search=zzzzz", headers=headers)
@@ -69,8 +69,8 @@ def test_course_search_no_match(client, teacher_auth):
     assert body["total"] == 0
 
 
-def test_course_search_combined_with_pagination(client, teacher_auth):
-    _, headers = teacher_auth
+def test_course_search_combined_with_pagination(client, user_auth):
+    _, headers = user_auth
     _create_course(client, headers, "CS301", "Databases I")
     _create_course(client, headers, "CS302", "Databases II")
     _create_course(client, headers, "MATH201", "Linear Algebra")
@@ -91,9 +91,9 @@ def test_course_search_combined_with_pagination(client, teacher_auth):
 
 
 def test_material_search_matches_title(
-    client, _setup, teacher_auth
+    client, _setup, user_auth
 ):
-    _, headers = teacher_auth
+    _, headers = user_auth
     course_id = _create_course(client, headers, "CS301", "Databases")
     _upload(client, headers, course_id, "syllabus.pdf", "Midterm Exam Notes")
 
@@ -103,8 +103,8 @@ def test_material_search_matches_title(
     assert body["items"][0]["title"] == "Midterm Exam Notes"
 
 
-def test_material_search_matches_original_filename(client, _setup, teacher_auth):
-    _, headers = teacher_auth
+def test_material_search_matches_original_filename(client, _setup, user_auth):
+    _, headers = user_auth
     course_id = _create_course(client, headers, "CS301", "Databases")
     _upload(client, headers, course_id, "lecture-notes.pdf", "Chapter One")
 
@@ -115,9 +115,9 @@ def test_material_search_matches_original_filename(client, _setup, teacher_auth)
 
 
 def test_material_search_combines_with_course_filter(
-    client, _setup, teacher_auth
+    client, _setup, user_auth
 ):
-    _, headers = teacher_auth
+    _, headers = user_auth
     course_a = _create_course(client, headers, "CS301", "Databases")
     course_b = _create_course(client, headers, "MATH201", "Linear Algebra")
 
@@ -133,9 +133,9 @@ def test_material_search_combines_with_course_filter(
 
 
 def test_material_search_with_type_and_pagination(
-    client, _setup, teacher_auth
+    client, _setup, user_auth
 ):
-    _, headers = teacher_auth
+    _, headers = user_auth
     course_id = _create_course(client, headers, "CS301", "Databases")
     for i in range(3):
         _upload(client, headers, course_id, f"note{i}.pdf", f"Database Notes {i}")
@@ -149,8 +149,8 @@ def test_material_search_with_type_and_pagination(
     assert body["total_pages"] == 2
 
 
-def test_material_search_no_match(client, _setup, teacher_auth):
-    _, headers = teacher_auth
+def test_material_search_no_match(client, _setup, user_auth):
+    _, headers = user_auth
     course_id = _create_course(client, headers, "CS301", "Databases")
     _upload(client, headers, course_id, "syllabus.pdf", "Syllabus")
 
@@ -160,8 +160,8 @@ def test_material_search_no_match(client, _setup, teacher_auth):
     assert body["total"] == 0
 
 
-def test_material_search_empty_query_returns_all(client, teacher_auth):
-    _, headers = teacher_auth
+def test_material_search_empty_query_returns_all(client, _setup, user_auth):
+    _, headers = user_auth
     course_id = _create_course(client, headers, "CS301", "Databases")
     _upload(client, headers, course_id, "a.pdf", "Alpha")
     _upload(client, headers, course_id, "b.pdf", "Beta")

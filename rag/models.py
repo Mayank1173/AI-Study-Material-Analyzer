@@ -9,61 +9,6 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
-# Canonical visual-type labels produced by the extractors. They are kept as
-# plain strings so the extraction layer never needs a heavyweight module, and
-# they double as search keywords for visual queries.
-VISUAL_TYPE_UNKNOWN = "unknown"
-VISUAL_TYPE_DIAGRAM = "diagram"
-VISUAL_TYPE_FIGURE = "figure"
-VISUAL_TYPE_CHART = "chart"
-VISUAL_TYPE_TABLE = "table"
-VISUAL_TYPE_FLOWCHART = "flowchart"
-VISUAL_TYPE_ARCHITECTURE = "architecture"
-VISUAL_TYPE_IMAGE = "image"
-
-#: All valid visual-type labels.
-VISUAL_TYPES = frozenset(
-    {
-        VISUAL_TYPE_UNKNOWN,
-        VISUAL_TYPE_DIAGRAM,
-        VISUAL_TYPE_FIGURE,
-        VISUAL_TYPE_CHART,
-        VISUAL_TYPE_TABLE,
-        VISUAL_TYPE_FLOWCHART,
-        VISUAL_TYPE_ARCHITECTURE,
-        VISUAL_TYPE_IMAGE,
-    }
-)
-
-
-@dataclass(frozen=True)
-class VisualElement:
-    """Metadata describing one visual element found inside a document.
-
-    The extractors deliberately do NOT decode pixels: ``description`` stays
-    empty and ``pixel_analyzed`` stays ``False``. The RAG layer only guarantees
-    the metadata, caption, and surrounding text shown here, which downstream
-    prompts are explicitly told not to embellish.
-
-    ``material_id``, ``course_id``, ``original_filename`` and ``material_title``
-    are filled in by the pipeline once the document is linked to a source record
-    (the extractors leave them empty).
-    """
-
-    visual_id: str
-    material_id: str | None = None
-    course_id: str | None = None
-    original_filename: str | None = None
-    material_title: str | None = None
-    page: int | None = None
-    slide: int | None = None
-    source_location: str | None = None
-    visual_type: str = VISUAL_TYPE_UNKNOWN
-    caption: str = ""
-    nearby_text: str = ""
-    description: str = ""
-    pixel_analyzed: bool = False
-
 
 @dataclass(frozen=True)
 class SourceRef:
@@ -99,17 +44,11 @@ class ExtractedSection:
 
 @dataclass(frozen=True)
 class ExtractedDocument:
-    """Raw, normalized text produced by a single extractor.
-
-    ``visuals`` holds lightweight metadata for any figures, diagrams, charts or
-    images discovered while extracting text. It defaults to empty so plain-text
-    documents and existing tests are unaffected.
-    """
+    """Raw, normalized text produced by a single extractor."""
 
     file_type: str
     text: str = ""
     sections: tuple[ExtractedSection, ...] = field(default_factory=tuple)
-    visuals: tuple[VisualElement, ...] = field(default_factory=tuple)
 
 
 @dataclass(frozen=True)
@@ -162,18 +101,13 @@ class TextChunk:
 
 @dataclass(frozen=True)
 class ProcessedDocument:
-    """The full output of the Phase 1 pipeline for one source document.
-
-    ``visuals`` holds materialized :class:`VisualElement` entries (source
-    record info filled in) for any visual content discovered while extracting.
-    """
+    """The full output of the Phase 1 pipeline for one source document."""
 
     source: SourceRef
     file_type: str
     extracted_text: str
     chunks: tuple[TextChunk, ...]
     total_chunks: int
-    visuals: tuple[VisualElement, ...] = field(default_factory=tuple)
 
 
 @dataclass(frozen=True)

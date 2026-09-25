@@ -2,14 +2,6 @@ import uuid
 
 from tests.conftest import make_auth_headers, register_user
 
-TEST_PASSWORD = "testpassword123"
-
-
-def create_user(client, headers, name="Alice", email="alice@example.com"):
-    return client.post(
-        "/api/users", json={"name": name, "email": email}, headers=headers
-    )
-
 
 def create_course(client, headers, name="Databases", code="CS301"):
     return client.post(
@@ -30,66 +22,37 @@ def test_root_and_health_endpoints(client):
     assert response.json() == {"status": "healthy"}
 
 
-def test_create_user_success(client, teacher_auth):
-    _, headers = teacher_auth
-    response = create_user(client, headers)
-    assert response.status_code == 201
-    body = response.json()
-    assert body["name"] == "Alice"
-    assert body["email"] == "alice@example.com"
-    assert body["role"] == "student"
-    assert "id" in body
-    assert "created_at" in body
-    uuid.UUID(body["id"])
-
-
-def test_create_user_rejects_invalid_email(client, teacher_auth):
-    _, headers = teacher_auth
-    response = client.post(
-        "/api/users",
-        json={"name": "Bob", "email": "not-an-email"},
-        headers=headers,
-    )
-    assert response.status_code == 422
-
-
-def test_create_user_duplicate_email(client, teacher_auth):
-    _, headers = teacher_auth
-    assert create_user(client, headers).status_code == 201
-    response = create_user(client, headers, name="Another Alice")
-    assert response.status_code == 409
-    assert "already exists" in response.json()["detail"]
-
-
-def test_get_user(client, teacher_auth):
-    _, headers = teacher_auth
-    user_id = create_user(client, headers).json()["id"]
-    response = client.get(f"/api/users/{user_id}", headers=headers)
-    assert response.status_code == 200
-    assert response.json()["email"] == "alice@example.com"
-
-
-def test_create_course_success(client, teacher_auth):
-    _, headers = teacher_auth
+def test_create_course_success(client, user_auth):
+    _, headers = user_auth
     response = create_course(client, headers)
     assert response.status_code == 201
     body = response.json()
     assert body["name"] == "Databases"
     assert body["code"] == "CS301"
+    assert "teacher_id" not in body
+    assert "teacher" not in body
     assert "id" in body
     uuid.UUID(body["id"])
 
 
-def test_create_course_duplicate_code(client, teacher_auth):
-    _, headers = teacher_auth
+def test_create_course_duplicate_code_within_owner(client, user_auth):
+    _, headers = user_auth
     assert create_course(client, headers).status_code == 201
     response = create_course(client, headers, name="Databases 2")
     assert response.status_code == 409
     assert "already exists" in response.json()["detail"]
 
 
-def test_list_courses(client, teacher_auth):
-    _, headers = teacher_auth
+def test_create_course_same_code_across_users(client, user_auth, second_user_auth):
+    _, first_headers = user_auth
+    _, second_headers = second_user_auth
+    assert create_course(client, first_headers).status_code == 201
+    response = create_course(client, second_headers, name="Other Databases")
+    assert response.status_code == 201
+
+
+def test_list_courses(client, user_auth):
+    _, headers = user_auth
     create_course(client, headers, name="Alpha", code="A101")
     create_course(client, headers, name="Beta", code="B202")
     response = client.get("/api/courses", headers=headers)
@@ -101,21 +64,49 @@ def test_list_courses(client, teacher_auth):
     assert body["total_pages"] == 1
 
 
-def test_get_course(client, teacher_auth):
-    _, headers = teacher_auth
+def test_get_course(client, user_auth):
+    _, headers = user_auth
     course_id = create_course(client, headers).json()["id"]
     response = client.get(f"/api/courses/{course_id}", headers=headers)
     assert response.status_code == 200
     assert response.json()["code"] == "CS301"
 
 
-def test_missing_resource_returns_404(client, teacher_auth):
-    _, headers = teacher_auth
+def test_missing_resource_returns_404(client, user_auth):
+    _, headers = user_auth
     missing = str(uuid.uuid4())
-    assert client.get(f"/api/users/{missing}", headers=headers).status_code == 404
     assert client.get(f"/api/courses/{missing}", headers=headers).status_code == 404
     assert client.get(f"/api/materials/{missing}", headers=headers).status_code == 404
     assert client.delete(f"/api/materials/{missing}", headers=headers).status_code == 404
+
+
+def test_removed_users_endpoints_are_gone(client, user_auth):
+    _, headers = user_auth
+    assert client.get("/api/users", headers=headers).status_code == 404
+    assert client.post("/api/users", json={}, headers=headers).status_code == 404
+
+
+def test_removed_enrollment_endpoints_are_gone(client, user_auth):
+    _, headers = user_auth
+    course_id = create_course(client, headers).json()["id"]
+    assert (
+        client.post(f"/api/courses/{course_id}/enroll", headers=headers).status_code
+        == 404
+    )
+    assert (
+        client.delete(f"/api/courses/{course_id}/enroll", headers=headers).status_code
+        == 404
+    )
+    assert (
+        client.get(
+            f"/api/courses/{course_id}/enrollments/me", headers=headers
+        ).status_code
+        == 404
+    )
+    assert (
+        client.get(f"/api/courses/{course_id}/students", headers=headers).status_code
+        == 404
+    )
 
 
 def _make_user_and_course(client, headers):
@@ -133,8 +124,8 @@ def _create_material(client, headers, course_id, **overrides):
     return client.post("/api/materials", json=payload, headers=headers)
 
 
-def test_create_study_material_success(client, teacher_auth):
-    user_id, headers = teacher_auth
+def test_create_study_material_success(client, user_auth):
+    user_id, headers = user_auth
     course_id = _make_user_and_course(client, headers)
     response = _create_material(client, headers, course_id)
     assert response.status_code == 201
@@ -147,8 +138,8 @@ def test_create_study_material_success(client, teacher_auth):
     uuid.UUID(body["id"])
 
 
-def test_create_study_material_with_optional_fields(client, teacher_auth):
-    _, headers = teacher_auth
+def test_create_study_material_with_optional_fields(client, user_auth):
+    _, headers = user_auth
     course_id = _make_user_and_course(client, headers)
     response = _create_material(
         client,
@@ -169,27 +160,30 @@ def test_create_study_material_with_optional_fields(client, teacher_auth):
     assert "stored_file_name" not in body
 
 
-def test_create_study_material_invalid_course_returns_404(client, teacher_auth):
-    _, headers = teacher_auth
+def test_create_study_material_invalid_course_returns_404(client, user_auth):
+    _, headers = user_auth
     _make_user_and_course(client, headers)
     response = _create_material(client, headers, str(uuid.uuid4()))
     assert response.status_code == 404
     assert "Course" in response.json()["detail"]
 
 
-def test_create_material_requires_teacher(client, teacher_auth):
-    _, teacher_headers = teacher_auth
-    course_id = _make_user_and_course(client, teacher_headers)
+def test_any_authenticated_user_can_upload_to_any_course(client, second_user_auth):
+    _, owner_headers = second_user_auth
+    course_id = _make_user_and_course(client, owner_headers)
 
-    register_user(client, name="Bob", email="bob@example.com")
-    student_headers = make_auth_headers(client, email="bob@example.com")
+    register_user(client, name="Frank", email="frank@example.com")
 
-    response = _create_material(client, student_headers, course_id)
-    assert response.status_code == 403
+    frank_headers = make_auth_headers(client, email="frank@example.com")
+    frank_id = client.get("/api/auth/me", headers=frank_headers).json()["id"]
+
+    response = _create_material(client, frank_headers, course_id, title="Frank Notes")
+    assert response.status_code == 201
+    assert response.json()["uploaded_by"] == frank_id
 
 
-def test_get_study_material(client, teacher_auth):
-    _, headers = teacher_auth
+def test_get_study_material(client, user_auth):
+    _, headers = user_auth
     course_id = _make_user_and_course(client, headers)
     material_id = _create_material(client, headers, course_id).json()["id"]
     response = client.get(f"/api/materials/{material_id}", headers=headers)
@@ -197,12 +191,12 @@ def test_get_study_material(client, teacher_auth):
     assert response.json()["id"] == material_id
 
 
-def test_list_study_materials_filter_by_course_id(client, teacher_auth):
-    _, headers = teacher_auth
+def test_list_study_materials_filter_by_course_id(client, user_auth):
+    _, headers = user_auth
     course_id = _make_user_and_course(client, headers)
     other_course_id = create_course(client, headers, name="OS", code="CS302").json()[
         "id"
-]
+    ]
 
     _create_material(client, headers, course_id, title="Notes A")
     _create_material(client, headers, other_course_id, title="Notes B")
@@ -213,8 +207,8 @@ def test_list_study_materials_filter_by_course_id(client, teacher_auth):
     assert titles == {"Notes A"}
 
 
-def test_list_study_materials_filter_by_type_and_status(client, teacher_auth):
-    _, headers = teacher_auth
+def test_list_study_materials_filter_by_type_and_status(client, user_auth):
+    _, headers = user_auth
     course_id = _make_user_and_course(client, headers)
     _create_material(client, headers, course_id, material_type="notes")
     _create_material(client, headers, course_id, material_type="ppt")
@@ -231,8 +225,8 @@ def test_list_study_materials_filter_by_type_and_status(client, teacher_auth):
     assert len(response.json()["items"]) == 2
 
 
-def test_delete_study_material(client, teacher_auth):
-    user_id, headers = teacher_auth
+def test_delete_study_material(client, user_auth):
+    user_id, headers = user_auth
     course_id = _make_user_and_course(client, headers)
     material_id = _create_material(client, headers, course_id).json()["id"]
 
@@ -243,8 +237,8 @@ def test_delete_study_material(client, teacher_auth):
     assert response.status_code == 404
 
 
-def test_list_study_materials_empty(client, teacher_auth):
-    _, headers = teacher_auth
+def test_list_study_materials_empty(client, user_auth):
+    _, headers = user_auth
     response = client.get("/api/materials", headers=headers)
     assert response.status_code == 200
     assert response.json() == {

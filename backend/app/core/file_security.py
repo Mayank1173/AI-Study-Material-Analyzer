@@ -5,18 +5,13 @@ from app.services.errors import UnsupportedFileTypeError
 
 ALLOWED_FILE_TYPES: dict[str, set[str]] = {
     ".pdf": {"application/pdf"},
-    ".ppt": {"application/vnd.ms-powerpoint"},
-    ".pptx": {
-        "application/vnd.openxmlformats-officedocument.presentationml.presentation"
-    },
-    ".doc": {"application/msword"},
     ".docx": {
         "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
     },
+    ".pptx": {
+        "application/vnd.openxmlformats-officedocument.presentationml.presentation"
+    },
     ".txt": {"text/plain", "text/plain; charset=utf-8"},
-    ".png": {"image/png"},
-    ".jpg": {"image/jpeg"},
-    ".jpeg": {"image/jpeg"},
 }
 
 _FORBIDDEN_CHARS = re.compile(r"[\x00-\x1f\x7f]")

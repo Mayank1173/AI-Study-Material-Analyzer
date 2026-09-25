@@ -43,8 +43,8 @@ def _upload(client, headers, course_id, filename, content, content_type, **overr
     return client.post("/api/materials/upload", data=data, files=files, headers=headers)
 
 
-def test_upload_valid_pdf(client, _setup, db, teacher_auth):
-    _, headers = teacher_auth
+def test_upload_valid_pdf(client, _setup, db, user_auth):
+    _, headers = user_auth
     course_id = _make_user_and_course(client, headers)
     content = b"%PDF-1.4 fake pdf content"
     response = _upload(
@@ -63,8 +63,8 @@ def test_upload_valid_pdf(client, _setup, db, teacher_auth):
     assert (Path(get_settings().storage_dir) / stored).is_file()
 
 
-def test_upload_valid_docx(client, _setup, teacher_auth):
-    _, headers = teacher_auth
+def test_upload_valid_docx(client, _setup, user_auth):
+    _, headers = user_auth
     course_id = _make_user_and_course(client, headers)
     content = b"PK\x03\x04 fake docx content"
     response = _upload(
@@ -81,19 +81,57 @@ def test_upload_valid_docx(client, _setup, teacher_auth):
     )
 
 
-def test_upload_valid_image(client, _setup, teacher_auth):
-    _, headers = teacher_auth
+def test_upload_valid_pptx(client, _setup, user_auth):
+    _, headers = user_auth
     course_id = _make_user_and_course(client, headers)
-    content = b"fake png bytes"
+    content = b"PK\x03\x04 fake pptx content"
     response = _upload(
-        client, headers, course_id, "diagram.png", content, "image/png"
+        client,
+        headers,
+        course_id,
+        "slides.pptx",
+        content,
+        "application/vnd.openxmlformats-officedocument.presentationml.presentation",
     )
     assert response.status_code == 201
-    assert response.json()["mime_type"] == "image/png"
+    assert response.json()["mime_type"].startswith(
+        "application/vnd.openxmlformats-officedocument.presentationml"
+    )
 
 
-def test_upload_unsupported_extension_rejected(client, _setup, teacher_auth):
-    _, headers = teacher_auth
+def test_upload_valid_txt(client, _setup, user_auth):
+    _, headers = user_auth
+    course_id = _make_user_and_course(client, headers)
+    content = b"Hello world"
+    response = _upload(client, headers, course_id, "notes.txt", content, "text/plain")
+    assert response.status_code == 201
+    body = response.json()
+    assert body["file_name"] == "notes.txt"
+    assert body["mime_type"] == "text/plain"
+
+
+REJECTED_EXTENSIONS = [
+    ("legacy.ppt", "application/vnd.ms-powerpoint"),
+    ("legacy.doc", "application/msword"),
+    ("diagram.png", "image/png"),
+    ("picture.jpg", "image/jpeg"),
+    ("picture.jpeg", "image/jpeg"),
+]
+
+
+@pytest.mark.parametrize("filename,content_type", REJECTED_EXTENSIONS)
+def test_upload_unsupported_formats_rejected(client, _setup, user_auth, filename, content_type):
+    """Images and legacy Office formats are rejected at upload time."""
+    _, headers = user_auth
+    course_id = _make_user_and_course(client, headers)
+    response = _upload(
+        client, headers, course_id, filename, b"fake bytes", content_type
+    )
+    assert response.status_code == 415
+
+
+def test_upload_unsupported_extension_rejected(client, _setup, user_auth):
+    _, headers = user_auth
     course_id = _make_user_and_course(client, headers)
     response = _upload(
         client,
@@ -107,11 +145,11 @@ def test_upload_unsupported_extension_rejected(client, _setup, teacher_auth):
 
 
 def test_upload_oversized_file_rejected(
-    client, _setup, teacher_auth, monkeypatch, tmp_path
+    client, _setup, user_auth, monkeypatch, tmp_path
 ):
     monkeypatch.setenv("MAX_UPLOAD_SIZE_MB", "1")
     get_settings.cache_clear()
-    _, headers = teacher_auth
+    _, headers = user_auth
     course_id = _make_user_and_course(client, headers)
     response = _upload(
         client,
@@ -124,8 +162,8 @@ def test_upload_oversized_file_rejected(
     assert response.status_code == 413
 
 
-def test_upload_empty_material_rejected(client, _setup, teacher_auth):
-    _, headers = teacher_auth
+def test_upload_empty_material_rejected(client, _setup, user_auth):
+    _, headers = user_auth
     course_id = _make_user_and_course(client, headers)
     response = _upload(
         client, headers, course_id, None, None, None, source_url=None
@@ -134,8 +172,8 @@ def test_upload_empty_material_rejected(client, _setup, teacher_auth):
     assert "either a file or a source_url" in response.json()["detail"]
 
 
-def test_upload_invalid_course_returned_404(client, _setup, teacher_auth):
-    _, headers = teacher_auth
+def test_upload_invalid_course_returned_404(client, _setup, user_auth):
+    _, headers = user_auth
     _make_user_and_course(client, headers)
     response = _upload(
         client, headers, str(uuid.uuid4()), "notes.pdf", b"pdf", "application/pdf"
@@ -154,8 +192,8 @@ def test_upload_requires_authentication(client, _setup):
     assert response.status_code == 401
 
 
-def test_upload_url_only_material(client, _setup, teacher_auth):
-    _, headers = teacher_auth
+def test_upload_url_only_material(client, _setup, user_auth):
+    _, headers = user_auth
     course_id = _make_user_and_course(client, headers)
     response = _upload(
         client,
@@ -173,8 +211,8 @@ def test_upload_url_only_material(client, _setup, teacher_auth):
     assert body["file_size"] is None
 
 
-def test_upload_file_and_url_rejected(client, _setup, teacher_auth):
-    _, headers = teacher_auth
+def test_upload_file_and_url_rejected(client, _setup, user_auth):
+    _, headers = user_auth
     course_id = _make_user_and_course(client, headers)
     response = _upload(
         client,
@@ -189,8 +227,8 @@ def test_upload_file_and_url_rejected(client, _setup, teacher_auth):
     assert "not both" in response.json()["detail"]
 
 
-def test_upload_original_filename_sanitized(client, _setup, teacher_auth):
-    _, headers = teacher_auth
+def test_upload_original_filename_sanitized(client, _setup, user_auth):
+    _, headers = user_auth
     course_id = _make_user_and_course(client, headers)
     response = _upload(
         client,
@@ -204,8 +242,8 @@ def test_upload_original_filename_sanitized(client, _setup, teacher_auth):
     assert response.json()["file_name"] == "notes.pdf"
 
 
-def test_file_is_stored_with_safe_name(client, _setup, db, teacher_auth):
-    _, headers = teacher_auth
+def test_file_is_stored_with_safe_name(client, _setup, db, user_auth):
+    _, headers = user_auth
     course_id = _make_user_and_course(client, headers)
     content = b"stored bytes check"
     body = _upload(
@@ -220,8 +258,8 @@ def test_file_is_stored_with_safe_name(client, _setup, db, teacher_auth):
     assert "\\" not in stored_name
 
 
-def test_download_returns_correct_file(client, _setup, teacher_auth):
-    _, headers = teacher_auth
+def test_download_returns_correct_file(client, _setup, user_auth):
+    _, headers = user_auth
     course_id = _make_user_and_course(client, headers)
     content = b"%PDF-1.4 downloadable"
     body = _upload(
@@ -235,16 +273,16 @@ def test_download_returns_correct_file(client, _setup, teacher_auth):
     assert "notes.pdf" in response.headers["content-disposition"]
 
 
-def test_download_missing_material_returned_404(client, _setup, teacher_auth):
-    _, headers = teacher_auth
+def test_download_missing_material_returned_404(client, _setup, user_auth):
+    _, headers = user_auth
     response = client.get(
         f"/api/materials/{uuid.uuid4()}/download", headers=headers
     )
     assert response.status_code == 404
 
 
-def test_download_url_based_material_returns_metadata(client, _setup, teacher_auth):
-    _, headers = teacher_auth
+def test_download_url_based_material_returns_metadata(client, _setup, user_auth):
+    _, headers = user_auth
     course_id = _make_user_and_course(client, headers)
     body = _upload(
         client,
@@ -262,8 +300,8 @@ def test_download_url_based_material_returns_metadata(client, _setup, teacher_au
     assert "no local file" in payload["detail"]
 
 
-def test_delete_removes_record_and_file(client, _setup, db, teacher_auth):
-    _, headers = teacher_auth
+def test_delete_removes_record_and_file(client, _setup, db, user_auth):
+    _, headers = user_auth
     course_id = _make_user_and_course(client, headers)
     body = _upload(
         client, headers, course_id, "notes.pdf", b"pdf", "application/pdf"
@@ -282,9 +320,9 @@ def test_delete_removes_record_and_file(client, _setup, db, teacher_auth):
 
 
 def test_delete_handles_missing_stored_file_gracefully(
-    client, _setup, db, teacher_auth
+    client, _setup, db, user_auth
 ):
-    _, headers = teacher_auth
+    _, headers = user_auth
     course_id = _make_user_and_course(client, headers)
     body = _upload(
         client, headers, course_id, "notes.pdf", b"pdf", "application/pdf"
@@ -308,9 +346,9 @@ def test_path_traversal_blocked_by_resolver(_setup):
 
 
 def test_tampered_stored_name_cannot_escape_storage(
-    client, _setup, db, teacher_auth
+    client, _setup, db, user_auth
 ):
-    _, headers = teacher_auth
+    _, headers = user_auth
     course_id = _make_user_and_course(client, headers)
     body = _upload(
         client, headers, course_id, "notes.pdf", b"pdf", "application/pdf"
@@ -324,8 +362,8 @@ def test_tampered_stored_name_cannot_escape_storage(
     assert response.status_code == 500
 
 
-def test_existing_list_and_get_include_file_metadata(client, _setup, teacher_auth):
-    _, headers = teacher_auth
+def test_existing_list_and_get_include_file_metadata(client, _setup, user_auth):
+    _, headers = user_auth
     course_id = _make_user_and_course(client, headers)
     content = b"%PDF-1.4 metadata"
     body = _upload(

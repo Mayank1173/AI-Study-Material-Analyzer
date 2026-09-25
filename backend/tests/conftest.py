@@ -4,6 +4,7 @@ from sqlalchemy import create_engine, event
 from sqlalchemy.orm import Session, sessionmaker
 from sqlalchemy.pool import StaticPool
 
+from app.core.config import get_settings
 from app.core.security import create_access_token, hash_password
 from app.db.base import Base
 from app.db.session import get_db
@@ -54,7 +55,7 @@ def make_db_user(
 
 
 def auth_headers_for(user: User) -> dict:
-    token = create_access_token(user.id, user.role)
+    token = create_access_token(user.id)
     return {"Authorization": f"Bearer {token}"}
 
 
@@ -95,8 +96,7 @@ def db():
     """Provide a database session without resetting the schema.
 
     Useful in API tests that also use the `client` fixture, where the schema
-    is already reset by `client` and any `teacher_auth`/`student_auth` data
-    must remain visible.
+    is already reset by `client` and any `user_auth` data must remain visible.
     """
     session = TestingSessionLocal()
     yield session
@@ -121,30 +121,30 @@ def client():
 
 
 @pytest.fixture()
-def teacher_user():
-    return make_db_user(
-        name="Teacher",
-        email="teacher@example.com",
-        role="teacher",
-    )
+def user_auth(client):
+    """Return (user_id, auth_headers) for a freshly created normal user."""
+    user = make_db_user(name="Alice", email="alice@example.com")
+    return user.id, auth_headers_for(user)
 
 
 @pytest.fixture()
-def teacher_auth(client, teacher_user):
-    """Return (user_id, auth_headers) for a teacher account."""
-    return teacher_user.id, auth_headers_for(teacher_user)
+def second_user_auth(client):
+    """Return (user_id, auth_headers) for a second normal user."""
+    user = make_db_user(name="Bob", email="bob@example.com")
+    return user.id, auth_headers_for(user)
 
 
-@pytest.fixture()
-def student_user():
-    return make_db_user(
-        name="Student",
-        email="student@example.com",
-        role="student",
-    )
+@pytest.fixture(autouse=True)
+def _isolate_rag_store(tmp_path, monkeypatch):
+    """Redirect the RAG vector store to a temporary path for every test.
 
-
-@pytest.fixture()
-def student_auth(client, student_user):
-    """Return (user_id, auth_headers) for a student account."""
-    return student_user.id, auth_headers_for(student_user)
+    This prevents any test from touching the real persistent
+    ``rag/rag_data/knowledge_base.db`` database. The deterministic embedder is
+    pinned so tests are fast and deterministic regardless of whether
+    sentence-transformers is installed.
+    """
+    monkeypatch.setenv("RAG_VECTOR_STORE_PATH", str(tmp_path / "test_vectors.db"))
+    monkeypatch.setenv("RAG_EMBEDDING_BACKEND", "deterministic")
+    get_settings.cache_clear()
+    yield
+    get_settings.cache_clear()

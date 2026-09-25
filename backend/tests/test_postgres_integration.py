@@ -11,17 +11,26 @@ Running them
 
        createdb ai_study_material_analyzer_test
 
-2. Point at it with the TEST_DATABASE_URL environment variable and run ONLY
-   this file (or run the whole suite; every test here is skipped when the
-   variable is absent):
+2. Run ONLY this file (or run the whole suite; every test here is skipped
+   when no PostgreSQL URL is available):
 
-       TEST_DATABASE_URL=postgresql+psycopg://postgres:postgres@localhost:5432/ai_study_material_analyzer_test \
        pytest tests/test_postgres_integration.py -v --tb=short
+
+URL resolution
+--------------
+
+- If the TEST_DATABASE_URL environment variable is set, it is used as-is.
+- Otherwise, the test URL is derived automatically from DATABASE_URL in
+  ``backend/.env`` by changing only the database name to
+  ``ai_study_material_analyzer_test`` (driver, user, password, host and port
+  are preserved exactly).
+- If neither is available, the module is skipped.
 
 Guidelines
 ----------
 - Credentials are never hard-coded in this file: the connection is read from
-  the TEST_DATABASE_URL environment variable.
+  TEST_DATABASE_URL or the project's DATABASE_URL, and the password is never
+  printed.
 - No destructive DROP DATABASE is ever executed. Each test only drops/recreates
   the tables inside the already-existing test database (Base.metadata.drop_all
   then create_all), which keeps every run independent without destroying the
@@ -32,11 +41,36 @@ import uuid
 from pathlib import Path
 
 import pytest
+from dotenv import load_dotenv
+from sqlalchemy.engine import make_url
+
+# Dedicated test database name; the rest of the connection (driver, user,
+# password, host, port) is taken verbatim from the project's DATABASE_URL.
+TEST_DATABASE_NAME = "ai_study_material_analyzer_test"
+
+# Load the project's backend/.env so DATABASE_URL can serve as the fallback
+# when TEST_DATABASE_URL is not explicitly provided. load_dotenv does not
+# override existing environment variables by default, so an explicitly set
+# TEST_DATABASE_URL always takes priority.
+_ENV_FILE = Path(__file__).resolve().parents[1] / ".env"
+load_dotenv(_ENV_FILE)
 
 TEST_DATABASE_URL = os.getenv("TEST_DATABASE_URL")
 if not TEST_DATABASE_URL:
+    _database_url = os.getenv("DATABASE_URL")
+    if _database_url:
+        # Derive the test URL by changing ONLY the database name. Parsing and
+        # re-rendering with make_url preserves the exact user/password/host/
+        # port (including any URL-encoded characters) instead of string-editing
+        # the raw URL, which previously caused password authentication failures.
+        _url = make_url(_database_url)
+        _url = _url.set(database=TEST_DATABASE_NAME)
+        TEST_DATABASE_URL = _url.render_as_string(hide_password=False)
+
+if not TEST_DATABASE_URL:
     pytest.skip(
-        "TEST_DATABASE_URL not set - skipping live PostgreSQL integration tests",
+        "TEST_DATABASE_URL not set and no DATABASE_URL in backend/.env - "
+        "skipping live PostgreSQL integration tests",
         allow_module_level=True,
     )
 
@@ -107,13 +141,13 @@ def client(pg_engine):
 
 
 def _create_user(
-    db: Session, *, name: str, email: str, role: str, password: str = TEST_PASSWORD
+    db: Session, *, name: str, email: str, password: str = TEST_PASSWORD
 ) -> User:
     user = User(
         name=name,
         email=email,
         password_hash=hash_password(password),
-        role=role,
+        role="student",
     )
     db.add(user)
     db.commit()
@@ -122,18 +156,18 @@ def _create_user(
 
 
 def _auth_headers(user: User) -> dict[str, str]:
-    token = create_access_token(user.id, user.role)
+    token = create_access_token(user.id)
     return {"Authorization": f"Bearer {token}"}
 
 
-def _register_student(
-    client, email: str = "pg-student@example.com"
+def _register_user(
+    client, *, name="Integration User", email="pg-user@example.com"
 ) -> dict:
-    """Public registration path always yields a student account."""
+    """Register a new user via the public API."""
     response = client.post(
         "/api/auth/register",
         json={
-            "name": "Integration Student",
+            "name": name,
             "email": email,
             "password": TEST_PASSWORD,
         },
@@ -156,40 +190,46 @@ def test_postgres_connection_and_version(pg_engine):
     assert "PostgreSQL" in server_version
 
 
-def test_full_teacher_student_material_workflow(client, pg_engine):
-    """The complete teacher -> course -> enrollment -> upload -> download flow."""
+def test_full_user_material_workflow(client, pg_engine):
+    """End-to-end: create users, upload materials, list/download/delete.
+
+    Any authenticated user can create courses and upload materials to any
+    course.  Materials are private to the user who uploaded them.
+    """
     TestSession = sessionmaker(bind=pg_engine, expire_on_commit=False)
 
     session = TestSession()
-    teacher = _create_user(
-        session, name="PG Teacher", email="pg-teacher@example.com", role="teacher"
+    owner = _create_user(
+        session, name="PG Owner", email="pg-owner@example.com"
     )
     session.close()
 
-    student_me = _register_student(client)
-    student_id = student_me["id"]
+    other_me = _register_user(
+        client, name="PG Other", email="pg-other@example.com"
+    )
+    other_id = other_me["id"]
 
-    teacher_token = _login(client, "pg-teacher@example.com")
-    student_token = _login(client, "pg-student@example.com")
+    owner_token = _login(client, "pg-owner@example.com")
+    other_token = _login(client, "pg-other@example.com")
 
-    teacher_headers = {"Authorization": f"Bearer {teacher_token}"}
-    student_headers = {"Authorization": f"Bearer {student_token}"}
+    owner_headers = _auth_headers(owner)
+    other_headers = {"Authorization": f"Bearer {other_token}"}
 
-    me_response = client.get("/api/auth/me", headers=teacher_headers)
+    me_response = client.get("/api/auth/me", headers=owner_headers)
     assert me_response.status_code == 200
-    assert me_response.json()["role"] == "teacher"
+    assert me_response.json()["id"] == str(owner.id)
 
-    student_me_response = client.get("/api/auth/me", headers=student_headers)
-    assert student_me_response.status_code == 200
-    assert student_me_response.json()["id"] == student_id
+    other_me_response = client.get("/api/auth/me", headers=other_headers)
+    assert other_me_response.status_code == 200
+    assert other_me_response.json()["id"] == other_id
 
     course_response = client.post(
         "/api/courses",
-        headers=teacher_headers,
+        headers=owner_headers,
         json={
             "name": "PostgreSQL Integration",
             "code": "PG101",
-            "description": "End-to-end course",
+            "description": "End-to-end subject",
         },
     )
     assert course_response.status_code == 201, course_response.text
@@ -197,25 +237,14 @@ def test_full_teacher_student_material_workflow(client, pg_engine):
     course_id = course["id"]
 
     view_response = client.get(
-        f"/api/courses/{course_id}", headers=student_headers
+        f"/api/courses/{course_id}", headers=other_headers
     )
     assert view_response.status_code == 200
     assert view_response.json()["id"] == course_id
 
-    enroll_response = client.post(
-        f"/api/courses/{course_id}/enroll", headers=student_headers
-    )
-    assert enroll_response.status_code == 201, enroll_response.text
-
-    status_response = client.get(
-        f"/api/courses/{course_id}/enrollments/me", headers=student_headers
-    )
-    assert status_response.status_code == 200
-    assert status_response.json()["is_enrolled"] is True
-
     upload_response = client.post(
         "/api/materials/upload",
-        headers=teacher_headers,
+        headers=other_headers,
         data={
             "course_id": course_id,
             "title": "Integration Notes",
@@ -228,53 +257,53 @@ def test_full_teacher_student_material_workflow(client, pg_engine):
     material_id = material["id"]
     assert material["file_name"] == "integration-notes.txt"
     assert material["status"] == "uploaded"
+    assert material["uploaded_by"] == other_id
 
     session = TestSession()
     db_material = session.get(StudyMaterial, uuid.UUID(material_id))
     assert db_material is not None
     assert db_material.title == "Integration Notes"
     assert db_material.course_id == uuid.UUID(course_id)
-    assert db_material.uploaded_by == teacher.id
+    assert db_material.uploaded_by == uuid.UUID(other_id)
     db_material_id = db_material.id
+    stored_name = db_material.stored_file_name
     session.close()
 
-    stored_name = db_material.stored_file_name
     if stored_name:
         stored_path = Path(get_settings().storage_dir) / stored_name
         assert stored_path.is_file(), f"stored file missing at {stored_path}"
         assert stored_path.read_bytes() == b"Hello PostgreSQL"
 
-    teacher_list = client.get(
-        f"/api/materials?course_id={course_id}", headers=teacher_headers
+    other_list = client.get(
+        f"/api/materials?course_id={course_id}", headers=other_headers
     )
-    assert teacher_list.status_code == 200
-    assert teacher_list.json()["total"] == 1
+    assert other_list.status_code == 200
+    assert other_list.json()["total"] == 1
 
-    teacher_view = client.get(
-        f"/api/materials/{material_id}", headers=teacher_headers
+    other_view = client.get(
+        f"/api/materials/{material_id}", headers=other_headers
     )
-    assert teacher_view.status_code == 200
+    assert other_view.status_code == 200
 
-    student_list = client.get(
-        f"/api/materials?course_id={course_id}", headers=student_headers
+    owner_list = client.get(
+        f"/api/materials?course_id={course_id}", headers=owner_headers
     )
-    assert student_list.status_code == 200
-    assert student_list.json()["total"] == 1
+    assert owner_list.status_code == 200
+    assert owner_list.json()["total"] == 0
 
-    student_view = client.get(
-        f"/api/materials/{material_id}", headers=student_headers
+    owner_view = client.get(
+        f"/api/materials/{material_id}", headers=owner_headers
     )
-    assert student_view.status_code == 200
+    assert owner_view.status_code == 403
 
     download = client.get(
-        f"/api/materials/{material_id}/download", headers=student_headers
+        f"/api/materials/{material_id}/download", headers=other_headers
     )
     assert download.status_code == 200
     assert download.content == b"Hello PostgreSQL"
 
-    # Cleanup: teacher deletes the material -> DB row and stored file removed.
     delete_response = client.delete(
-        f"/api/materials/{material_id}", headers=teacher_headers
+        f"/api/materials/{material_id}", headers=other_headers
     )
     assert delete_response.status_code == 204
 
@@ -301,31 +330,24 @@ def test_postgres_health_endpoints(client):
 
 
 def test_database_error_and_edge_cases(client, pg_engine):
-    """Duplicate/constraint/authorization edge cases against PostgreSQL."""
+    """Edge cases against PostgreSQL: duplicates, cross-user access, uploads."""
     TestSession = sessionmaker(bind=pg_engine, expire_on_commit=False)
 
     session = TestSession()
-    teacher = _create_user(
-        session, name="PG Teacher 2", email="pg-teacher2@example.com", role="teacher"
+    user_a = _create_user(
+        session, name="PG User A", email="pg-user-a@example.com"
     )
-    owner_teacher = _create_user(
-        session,
-        name="PG Owner",
-        email="pg-owner@example.com",
-        role="teacher",
+    user_b = _create_user(
+        session, name="PG User B", email="pg-user-b@example.com"
     )
     session.close()
 
-    teacher_headers = _auth_headers(teacher)
-    owner_headers = _auth_headers(owner_teacher)
-
-    _register_student(client)
-    student_token = _login(client, "pg-student@example.com")
-    student_headers = {"Authorization": f"Bearer {student_token}"}
+    a_headers = _auth_headers(user_a)
+    b_headers = _auth_headers(user_b)
 
     course_response = client.post(
         "/api/courses",
-        headers=owner_headers,
+        headers=a_headers,
         json={"name": "Edge Course", "code": "PGEDGE", "description": None},
     )
     assert course_response.status_code == 201
@@ -333,44 +355,40 @@ def test_database_error_and_edge_cases(client, pg_engine):
 
     duplicate_course = client.post(
         "/api/courses",
-        headers=owner_headers,
+        headers=a_headers,
         json={"name": "Edge Course Dupe", "code": "PGEDGE"},
     )
     assert duplicate_course.status_code == 409
 
     not_found_course = client.get(
         "/api/courses/00000000-0000-0000-0000-000000000000",
-        headers=student_headers,
+        headers=b_headers,
     )
     assert not_found_course.status_code == 404
 
     not_found_material = client.get(
         "/api/materials/00000000-0000-0000-0000-000000000000",
-        headers=student_headers,
+        headers=b_headers,
     )
     assert not_found_material.status_code == 404
 
-    assert client.post(
-        "/api/courses", headers=owner_headers, json={"name": "No", "code": "XXX"}
-    ).status_code == 201
+    # User B can create a course with the same code (no global uniqueness)
+    b_course = client.post(
+        "/api/courses",
+        headers=b_headers,
+        json={"name": "B Course", "code": "PGEDGE"},
+    )
+    assert b_course.status_code == 201
+
     duplicate_email = client.post(
         "/api/auth/register",
         json={
             "name": "Clone",
-            "email": "pg-student@example.com",
+            "email": "pg-user-a@example.com",
             "password": TEST_PASSWORD,
         },
     )
     assert duplicate_email.status_code == 409
-
-    enroll = client.post(
-        f"/api/courses/{course_id}/enroll", headers=student_headers
-    )
-    assert enroll.status_code == 201
-    duplicate_enroll = client.post(
-        f"/api/courses/{course_id}/enroll", headers=student_headers
-    )
-    assert duplicate_enroll.status_code == 409
 
     invalid_jwt = client.get(
         "/api/auth/me", headers={"Authorization": "Bearer not-a-jwt"}
@@ -380,53 +398,74 @@ def test_database_error_and_edge_cases(client, pg_engine):
     unauthenticated = client.get("/api/auth/me")
     assert unauthenticated.status_code == 401
 
-    unscoped_teacher = client.post(
-        "/api/courses",
-        headers=teacher_headers,
-        json={"name": "Other Teacher Course", "code": "OTHER1"},
-    )
-    assert unscoped_teacher.status_code == 201
-
-    forbidden_upload = client.post(
+    # Upload by user A to user A's course -> 201
+    upload = client.post(
         "/api/materials/upload",
-        headers=teacher_headers,
+        headers=a_headers,
         data={
             "course_id": course_id,
-            "title": "Not Mine",
+            "title": "A File",
             "material_type": "notes",
         },
-        files={"file": ("nope.txt", b"nope", "text/plain")},
+        files={"file": ("a.txt", b"a-content", "text/plain")},
     )
-    assert forbidden_upload.status_code == 403
+    assert upload.status_code == 201
+    material_id = upload.json()["id"]
 
-    material_upload = client.post(
+    # User B cannot view user A's material -> 403
+    denied_get = client.get(
+        f"/api/materials/{material_id}", headers=b_headers
+    )
+    assert denied_get.status_code == 403
+
+    # User B listing a course they didn't upload to -> 200 empty (not 403)
+    b_listing = client.get(
+        f"/api/materials?course_id={course_id}", headers=b_headers
+    )
+    assert b_listing.status_code == 200
+    assert b_listing.json()["total"] == 0
+
+    # Unsupported file type -> 415
+    bad_type = client.post(
         "/api/materials/upload",
-        headers=owner_headers,
+        headers=a_headers,
         data={
             "course_id": course_id,
-            "title": "Owner File",
+            "title": "Bad",
             "material_type": "notes",
         },
-        files={"file": ("owner.txt", b"owner-content", "text/plain")},
+        files={"file": ("bad.exe", b"MZ", "application/octet-stream")},
     )
-    assert material_upload.status_code == 201
-    material_id = material_upload.json()["id"]
+    assert bad_type.status_code == 415
 
-    other_student = _register_student(client, email="pg-other-student@example.com")
-    other_token = _login(client, other_student["email"])
-    other_headers = {"Authorization": f"Bearer {other_token}"}
-
-    denied_other_student = client.get(
-        f"/api/materials/{material_id}", headers=other_headers
+    # Oversized file -> 413 (default MAX_UPLOAD_SIZE_MB is 20)
+    oversized = client.post(
+        "/api/materials/upload",
+        headers=a_headers,
+        data={
+            "course_id": course_id,
+            "title": "Huge",
+            "material_type": "notes",
+        },
+        files={"file": ("big.txt", b"x" * (21 * 1024 * 1024), "text/plain")},
     )
-    assert denied_other_student.status_code == 403
+    assert oversized.status_code == 413
 
-    denied_listing = client.get(
-        f"/api/materials?course_id={course_id}", headers=other_headers
+    # Missing course -> 404
+    missing_course = client.post(
+        "/api/materials/upload",
+        headers=a_headers,
+        data={
+            "course_id": "00000000-0000-0000-0000-000000000000",
+            "title": "Missing",
+            "material_type": "notes",
+        },
+        files={"file": ("m.txt", b"m", "text/plain")},
     )
-    assert denied_listing.status_code == 403
+    assert missing_course.status_code == 404
 
-    owner_delete = client.delete(
-        f"/api/materials/{material_id}", headers=owner_headers
+    # Owner deletes own material -> 204
+    delete_response = client.delete(
+        f"/api/materials/{material_id}", headers=a_headers
     )
-    assert owner_delete.status_code == 204
+    assert delete_response.status_code == 204
