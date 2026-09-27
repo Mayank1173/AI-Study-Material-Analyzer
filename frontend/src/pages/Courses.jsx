@@ -1,5 +1,6 @@
 ﻿import React, { useState } from 'react';
 import { Link } from 'react-router-dom';
+import { useUser } from '../context/UserContext';
 import {
   Search,
   Bell,
@@ -31,6 +32,9 @@ import {
 
 export default function Courses() {
   const [showNotifications, setShowNotifications] = useState(false);
+  const { user } = useUser();
+  const displayName = user?.name || 'Student';
+  const initial = user?.name ? user.name.charAt(0).toUpperCase() : 'S';
   
   // Dynamic States for Activity and Deadlines
   const [recentActivity, setRecentActivity] = useState([]);
@@ -207,10 +211,10 @@ export default function Courses() {
         <div className="flex items-center justify-between p-3 bg-slate-800/60 rounded-xl border border-slate-700/50">
           <div className="flex items-center gap-3">
             <div className="w-8 h-8 rounded-full bg-blue-500 text-white flex items-center font-semibold justify-center text-sm">
-              M
+              {initial}
             </div>
             <div>
-              <p className="text-sm font-medium text-white">Mayank</p>
+              <p className="text-sm font-medium text-white">{displayName}</p>
               <p className="text-xs text-slate-400">Student</p>
             </div>
           </div>
@@ -255,10 +259,10 @@ export default function Courses() {
             </div>
             <div className="flex items-center gap-3 pl-2 border-l border-slate-200">
               <div className="w-8 h-8 rounded-full bg-blue-600 text-white font-semibold flex items-center justify-center text-sm">
-                M
+                {initial}
               </div>
               <div className="text-left leading-tight">
-                <p className="text-sm font-semibold text-slate-700">Mayank</p>
+                <p className="text-sm font-semibold text-slate-700">{displayName}</p>
                 <p className="text-xs text-slate-400">Student</p>
               </div>
             </div>

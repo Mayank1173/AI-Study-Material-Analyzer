@@ -7,12 +7,20 @@ import uuid
 from pydantic import BaseModel, Field
 
 
+class ChatTurn(BaseModel):
+    """One earlier chat turn, supplied so follow-up questions keep context."""
+
+    role: str = Field(pattern="^(user|assistant)$")
+    content: str = Field(min_length=1, max_length=4000)
+
+
 class ChatRequest(BaseModel):
     """Inbound chat message from the frontend."""
 
     message: str = Field(min_length=1, max_length=4000)
     course_id: str | None = Field(default=None, max_length=64)
     material_id: str | None = Field(default=None, max_length=64)
+    history: list[ChatTurn] = Field(default_factory=list, max_length=20)
 
 
 class ChatSource(BaseModel):

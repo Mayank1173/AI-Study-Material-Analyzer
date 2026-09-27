@@ -1,6 +1,7 @@
 ﻿import React, { useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import { useUser } from '../context/UserContext';
+import { getTheme, setTheme } from '../lib/theme';
 import {
   Search,
   Bell,
@@ -32,10 +33,16 @@ import {
 } from 'lucide-react';
 
 export default function Settings() {
-  const [theme, setTheme] = useState('light');
+  const [theme, setThemeState] = useState(() => getTheme());
+
+  const handleThemeChange = (nextTheme) => {
+    setThemeState(nextTheme);
+    setTheme(nextTheme);
+  };
+
   const [selectedPlan, setSelectedPlan] = useState('monthly');
   const [showNotifications, setShowNotifications] = useState(false);
-  const { user, updateUser } = useUser();
+  const { user, updateUser, logout } = useUser();
   const navigate = useNavigate();
 
   const [activeTab, setActiveTab] = useState('Settings');
@@ -103,7 +110,9 @@ export default function Settings() {
   };
 
   const handleSignOut = () => {
-    localStorage.removeItem('campuslearn_user');
+    // Clears the JWT (localStorage + sessionStorage) and resets UserContext
+    // so route guards treat the user as unauthenticated.
+    logout();
     navigate('/login');
   };
 
@@ -164,7 +173,7 @@ export default function Settings() {
               </div>
             )}
             <div className="truncate max-w-[120px]">
-              <p className="text-sm font-medium text-white truncate">{user?.name || 'Mayank TS'}</p>
+              <p className="text-sm font-medium text-white truncate">{user?.name || 'Student'}</p>
               <p className="text-xs text-slate-400">{user?.role || 'Student'}</p>
             </div>
           </div>
@@ -216,7 +225,7 @@ export default function Settings() {
                 </div>
               )}
               <div className="text-left leading-tight">
-                <p className="text-sm font-semibold text-slate-700">{user?.name || 'Mayank TS'}</p>
+                <p className="text-sm font-semibold text-slate-700">{user?.name || 'Student'}</p>
                 <p className="text-xs text-slate-400">{user?.role || 'Student'}</p>
               </div>
             </div>
@@ -498,13 +507,34 @@ export default function Settings() {
                 <div className="rounded-2xl border border-slate-200 bg-slate-50 p-6 shadow-sm">
                   <h4 className="text-sm font-semibold text-slate-800 mb-3">Theme Preferences</h4>
                   <div className="flex items-center gap-3">
-                    <button className="px-4 py-2 bg-blue-50 text-blue-600 border border-blue-200 rounded-xl text-sm font-semibold">
+                    <button
+                      onClick={() => handleThemeChange('light')}
+                      className={`px-4 py-2 rounded-xl text-sm transition-colors ${
+                        theme === 'light'
+                          ? 'bg-blue-50 text-blue-600 border border-blue-200 font-semibold'
+                          : 'bg-white text-slate-600 border border-slate-200 hover:bg-slate-100 font-medium'
+                      }`}
+                    >
                       Light Mode
                     </button>
-                    <button className="px-4 py-2 bg-white text-slate-600 border border-slate-200 hover:bg-slate-100 rounded-xl text-sm font-medium transition-colors">
+                    <button
+                      onClick={() => handleThemeChange('dark')}
+                      className={`px-4 py-2 rounded-xl text-sm transition-colors ${
+                        theme === 'dark'
+                          ? 'bg-blue-50 text-blue-600 border border-blue-200 font-semibold'
+                          : 'bg-white text-slate-600 border border-slate-200 hover:bg-slate-100 font-medium'
+                      }`}
+                    >
                       Dark Mode
                     </button>
-                    <button className="px-4 py-2 bg-white text-slate-600 border border-slate-200 hover:bg-slate-100 rounded-xl text-sm font-medium transition-colors">
+                    <button
+                      onClick={() => handleThemeChange('system')}
+                      className={`px-4 py-2 rounded-xl text-sm transition-colors ${
+                        theme === 'system'
+                          ? 'bg-blue-50 text-blue-600 border border-blue-200 font-semibold'
+                          : 'bg-white text-slate-600 border border-slate-200 hover:bg-slate-100 font-medium'
+                      }`}
+                    >
                       System Sync
                     </button>
                   </div>

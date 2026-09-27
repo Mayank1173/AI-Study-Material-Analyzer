@@ -1,6 +1,8 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect, useRef, useMemo } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import { useUser } from '../context/UserContext';
+import { chatRequest, getToken, apiFetch } from '../lib/api';
+import { listSessions, saveSession, newSessionId } from '../lib/chatSessions';
 import {
   Search,
   Bell,
@@ -39,20 +41,191 @@ export default function Chat() {
   const [showAttachmentMenu, setShowAttachmentMenu] = useState(false);
   const [inputPrompt, setInputPrompt] = useState('');
   const [chatMessages, setChatMessages] = useState([]);
+  const [isThinking, setIsThinking] = useState(false);
+  const [sessionsVersion, setSessionsVersion] = useState(0);
+  const [activeSessionId, setActiveSessionId] = useState(null);
+  const activeSessionRef = useRef(null);
+  const fileInputRef = useRef(null);
   const navigate = useNavigate();
   const { user } = useUser();
-  const initialLetter = user?.name ? user.name.charAt(0).toUpperCase() : 'M';
+  const initialLetter = user?.name ? user.name.charAt(0).toUpperCase() : 'S';
+  const owner = user?.email || user?.id || 'anonymous';
 
-  const handleSend = (e) => {
-    e.preventDefault();
-    if (inputPrompt.trim()) {
-      setChatMessages((prev) => [...prev, { role: 'user', text: inputPrompt }]);
-      setInputPrompt('');
+  // Past chat sessions for this account. `sessionsVersion` is bumped after
+  // every save so the memo re-reads storage (and it re-reads on account
+  // changes because `owner` is a dependency).
+  const sessions = useMemo(() => {
+    void sessionsVersion;
+    return listSessions(owner);
+  }, [owner, sessionsVersion]);
+
+  // Persist every change to the active conversation.
+  useEffect(() => {
+    const id = activeSessionRef.current;
+    if (!id || chatMessages.length === 0) return;
+    const base = listSessions(owner).find((s) => s.id === id) || { id };
+    saveSession(owner, { ...base, messages: chatMessages });
+    setSessionsVersion((v) => v + 1);
+  }, [chatMessages, owner]);
+
+  const pushMessage = (message) => {
+    setChatMessages((prev) => [...prev, message]);
+  };
+
+  const startSessionIfMissing = () => {
+    if (!activeSessionRef.current) {
+      const id = newSessionId();
+      activeSessionRef.current = id;
+      setActiveSessionId(id);
     }
   };
 
+  const handleSend = (e) => {
+    e.preventDefault();
+    const text = inputPrompt.trim();
+    if (!text || isThinking) return;
+
+    if (!getToken()) {
+      pushMessage({ role: 'user', text });
+      pushMessage({
+        role: 'assistant',
+        text: 'Please log in first so the AI tutor can use your study material.',
+      });
+      setInputPrompt('');
+      return;
+    }
+
+    // Conversation context sent so follow-up questions resolve correctly.
+    const history = chatMessages
+      .filter((m) => m.role === 'user' || m.role === 'assistant')
+      .slice(-20)
+      .map((m) => ({ role: m.role, content: m.text }));
+
+    startSessionIfMissing();
+    setChatMessages((prev) => [...prev, { role: 'user', text }]);
+    setInputPrompt('');
+    setIsThinking(true);
+
+    chatRequest({ message: text, history })
+      .then((res) => {
+        pushMessage({
+          role: 'assistant',
+          text: res.answer,
+          sources: res.sources || [],
+        });
+      })
+      .catch((err) => {
+        pushMessage({
+          role: 'assistant',
+          text: `Something went wrong: ${err.message || 'the AI service is unavailable.'}`,
+        });
+      })
+      .finally(() => setIsThinking(false));
+  };
+
   const handleNewChat = () => {
+    activeSessionRef.current = null;
+    setActiveSessionId(null);
     setChatMessages([]);
+  };
+
+  const openSession = (session) => {
+    activeSessionRef.current = session.id;
+    setActiveSessionId(session.id);
+    setChatMessages(session.messages || []);
+    setShowHistory(false);
+  };
+
+  const formatSessionTime = (ts) => {
+    if (!ts) return '';
+    const date = new Date(ts);
+    return date.toLocaleString(undefined, {
+      month: 'short',
+      day: 'numeric',
+      hour: '2-digit',
+      minute: '2-digit',
+    });
+  };
+
+  // File upload: the "+" menu's "Upload files" item opens this dialog.
+  const ALLOWED_EXTENSIONS = ['.pdf', '.docx', '.pptx', '.txt'];
+
+  const ensureUploadCourse = async () => {
+    const list = await apiFetch('/api/courses/mine?page=1&page_size=5');
+    const courses = (list && list.items) || [];
+    if (courses.length > 0) return courses[0].id;
+    const created = await apiFetch('/api/courses', {
+      method: 'POST',
+      body: {
+        name: 'My Study Set',
+        code: `CHT${Date.now().toString(36).toUpperCase().slice(-5)}`,
+        description: 'Files uploaded from the AI chat',
+      },
+    });
+    return created.id;
+  };
+
+  const handleFilesSelected = async (event) => {
+    const files = Array.from(event.target.files || []);
+    event.target.value = '';
+    if (files.length === 0) return;
+
+    if (!getToken()) {
+      pushMessage({
+        role: 'assistant',
+        text: 'Please log in first so you can upload study material.',
+      });
+      return;
+    }
+
+    setIsThinking(true);
+    try {
+      const courseId = await ensureUploadCourse();
+      for (const file of files) {
+        const extMatch = file.name.match(/\.[^.]+$/);
+        const ext = extMatch ? extMatch[0].toLowerCase() : '';
+        if (!ALLOWED_EXTENSIONS.includes(ext)) {
+          pushMessage({
+            role: 'assistant',
+            text: `I couldn't upload "${file.name}". Supported formats: PDF, DOCX, PPTX and TXT.`,
+          });
+          continue;
+        }
+
+        const form = new FormData();
+        form.append('course_id', courseId);
+        form.append('title', file.name.slice(0, file.name.length - ext.length) || file.name);
+        form.append('material_type', ext.slice(1));
+        form.append('file', file);
+
+        const material = await apiFetch('/api/materials/upload', {
+          method: 'POST',
+          body: form,
+        });
+        try {
+          await apiFetch(`/api/materials/${material.id}/process`, {
+            method: 'POST',
+          });
+        } catch (procErr) {
+          pushMessage({
+            role: 'assistant',
+            text: `Uploaded "${file.name}", but indexing reported: ${procErr.message}`,
+          });
+          continue;
+        }
+        pushMessage({
+          role: 'assistant',
+          text: `Uploaded and indexed "${file.name}". Ask me anything about it and I'll use it as context.`,
+        });
+      }
+    } catch (err) {
+      pushMessage({
+        role: 'assistant',
+        text: `Upload failed: ${err.message || 'please try again.'}`,
+      });
+    } finally {
+      setIsThinking(false);
+    }
   };
 
   const promptSuggestions = [
@@ -121,7 +294,7 @@ export default function Chat() {
               </div>
             )}
             <div className="truncate max-w-[120px]">
-              <p className="text-sm font-medium text-white truncate">{user?.name || 'Mayank'}</p>
+              <p className="text-sm font-medium text-white truncate">{user?.name || 'Student'}</p>
               <p className="text-xs text-slate-400">{user?.role || 'Student'}</p>
             </div>
           </div>
@@ -253,13 +426,42 @@ export default function Chat() {
             ) : (
               /* Active Chat Messages */
               <div className="w-full max-w-3xl flex flex-col space-y-4 mb-auto">
-                {chatMessages.map((msg, index) => (
-                  <div key={index} className="flex flex-col items-end animate-in fade-in slide-in-from-bottom-2">
-                    <div className="bg-blue-600 text-white px-4 py-3 rounded-2xl rounded-tr-sm text-sm shadow-sm max-w-[80%]">
-                      {msg.text}
+                {chatMessages.map((msg, index) =>
+                  msg.role === 'assistant' ? (
+                    <div key={index} className="flex flex-col items-start animate-in fade-in slide-in-from-bottom-2">
+                      <div className="bg-white border border-slate-200 text-slate-800 px-4 py-3 rounded-2xl rounded-tl-sm text-sm shadow-sm max-w-[80%]">
+                        <span className="whitespace-pre-wrap">{msg.text}</span>
+                        {msg.sources && msg.sources.length > 0 ? (
+                          <div className="flex flex-wrap gap-1.5 mt-2">
+                            {msg.sources.map((src, sIdx) => (
+                              <span
+                                key={sIdx}
+                                className="inline-flex items-center gap-1 px-2 py-0.5 bg-[#EFECE6] border border-slate-200/80 rounded-full text-[11px] font-medium text-slate-700"
+                              >
+                                <FileText className="w-3 h-3" />
+                                {src.material_title || src.original_filename || 'Material'}
+                              </span>
+                            ))}
+                          </div>
+                        ) : null}
+                      </div>
+                    </div>
+                  ) : (
+                    <div key={index} className="flex flex-col items-end animate-in fade-in slide-in-from-bottom-2">
+                      <div className="bg-blue-600 text-white px-4 py-3 rounded-2xl rounded-tr-sm text-sm shadow-sm max-w-[80%]">
+                        {msg.text}
+                      </div>
+                    </div>
+                  )
+                )}
+
+                {isThinking ? (
+                  <div className="flex flex-col items-start animate-in fade-in">
+                    <div className="bg-white border border-slate-200 text-slate-500 px-4 py-3 rounded-2xl rounded-tl-sm text-sm shadow-sm">
+                      Thinking…
                     </div>
                   </div>
-                ))}
+                ) : null}
               </div>
             )}
 
@@ -292,7 +494,10 @@ export default function Chat() {
                           <div className="flex flex-col py-1.5">
                             <button 
                               type="button"
-                              onClick={() => setShowAttachmentMenu(false)}
+                              onClick={() => {
+                                setShowAttachmentMenu(false);
+                                if (fileInputRef.current) fileInputRef.current.click();
+                              }}
                               className="flex items-center gap-3 px-4 py-2.5 text-sm font-medium text-slate-700 hover:bg-slate-50 transition-colors w-full text-left"
                             >
                               <Upload className="w-4 h-4 text-blue-500" />
@@ -338,6 +543,16 @@ export default function Chat() {
                   </div>
                 </div>
               </form>
+
+              {/* Hidden picker opened by the "+" menu's "Upload files" item */}
+              <input
+                ref={fileInputRef}
+                type="file"
+                multiple
+                accept=".pdf,.docx,.pptx,.txt"
+                onChange={handleFilesSelected}
+                className="hidden"
+              />
             </div>
           </div>
 
@@ -353,10 +568,37 @@ export default function Chat() {
                 </button>
               </div>
               <div className="p-4 flex-1 overflow-y-auto">
-                <div className="bg-slate-50 border border-slate-100 border-dashed rounded-xl p-6 flex flex-col items-center justify-center text-center space-y-2 mt-4">
-                  <History className="w-6 h-6 text-slate-300" />
-                  <p className="text-xs text-slate-500">No previous chats found for this study set.</p>
-                </div>
+                {sessions.length === 0 ? (
+                  <div className="bg-slate-50 border border-slate-100 border-dashed rounded-xl p-6 flex flex-col items-center justify-center text-center space-y-2 mt-4">
+                    <History className="w-6 h-6 text-slate-300" />
+                    <p className="text-xs text-slate-500">No previous chats found for this study set.</p>
+                  </div>
+                ) : (
+                  <div className="space-y-1.5">
+                    {sessions.map((session) => (
+                      <button
+                        key={session.id}
+                        type="button"
+                        onClick={() => openSession(session)}
+                        className={`w-full text-left px-3 py-2.5 rounded-xl text-sm transition-colors border ${
+                          session.id === activeSessionId
+                            ? 'bg-blue-50 border-blue-100 text-blue-700'
+                            : 'bg-white border-slate-100 text-slate-700 hover:bg-slate-50'
+                        }`}
+                      >
+                        <span className="block truncate font-medium">
+                          {session.title || 'New chat'}
+                        </span>
+                        <span className="mt-0.5 block text-[11px] text-slate-400">
+                          {formatSessionTime(session.updatedAt)}
+                          {Array.isArray(session.messages) && session.messages.length > 0
+                            ? ` · ${session.messages.length} messages`
+                            : ''}
+                        </span>
+                      </button>
+                    ))}
+                  </div>
+                )}
               </div>
             </div>
           )}

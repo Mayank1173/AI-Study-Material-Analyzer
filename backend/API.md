@@ -20,7 +20,7 @@ Every account is a normal user who can:
 - create their own subjects (`Course` rows),
 - upload study materials to any subject,
 - view/download/delete/process **only their own** uploads,
-- chat with the RAG engine, which answers **only from their own** materials.
+- chat with the AI assistant, which answers from general knowledge and uses the user's **own** materials as additional context.
 
 Subjects act as collections (e.g. `DBMS`, `OS`, `DAA`) for organizing uploaded
 notes. A user's subject list comes from `GET /api/courses/mine` (subjects they
@@ -385,8 +385,10 @@ Internal fields never exposed: `password_hash`, `stored_file_name`, `file_path`
 
 ### POST /api/chat
 
-Answer a question grounded in the authenticated user's own indexed study
-materials (RAG).
+Answer a question as a general-purpose AI assistant. The authenticated user's
+own indexed study materials (RAG) are supplied to the model as additional
+context when relevant; the model also answers from its general knowledge, so a
+question is answered whether or not any material matches.
 
 - Auth: Bearer token (required).
 - **The user id always comes from the JWT**, never from the request body.
@@ -399,6 +401,7 @@ materials (RAG).
   | `message`      | string | yes      | The student's question, 1–4000 characters.           |
   | `course_id`    | string | no       | UUID; restrict retrieval to one subject. Only narrows the user's own index. |
   | `material_id`  | string | no       | UUID; restrict retrieval to one material. Only narrows the user's own index. |
+  | `history`      | array  | no       | Up to 20 earlier turns (`{"role": "user"\|"assistant", "content": "..."}`) so follow-up questions keep conversation context. |
 
 - Response: `200 OK`
 
@@ -425,8 +428,8 @@ materials (RAG).
   | Field          | Type   | Description                                              |
   |----------------|--------|----------------------------------------------------------|
   | `answer`       | string | The generated answer.                                    |
-  | `sources`      | array  | Retrieved chunk references used to ground the answer. Empty when no material matched. |
-  | `has_context`  | bool   | False when nothing was retrieved from the user's index.  |
+  | `sources`      | array  | Retrieved chunk references supplied as context. Empty when no material matched. |
+  | `has_context`  | bool   | False when nothing was retrieved from the user's index. The answer is still generated.  |
 
   Each source references the material and subject the chunk came from, the
   human-readable title/filename, a location hint (e.g. page), and a relevance
@@ -448,13 +451,14 @@ materials (RAG).
   user-scoped index. They only ever narrow the authenticated user's own
   materials.
 - The retrieved text is wrapped as data (not instructions) in the prompt to
-  mitigate prompt injection; answers are grounded in the retrieved material.
+  mitigate prompt injection; it is used as extra context alongside the
+  model's own knowledge.
 
 ### No context
 
-When no chunks match (or the user has no indexed material), the API returns
-`200` with `has_context: false`, an empty `sources` array, and a safe
-no-context message in `answer`.
+When no chunks match (or the user has no indexed material), the API still
+returns `200` with a normally generated `answer` and `has_context: false` plus
+an empty `sources` array.
 
 ### POST /api/chat/summary
 
@@ -525,14 +529,15 @@ retrieved sources, and the standard "temporarily unavailable" message.
   user-scoped index. They only ever narrow the authenticated user's own
   materials.
 - The retrieved text is wrapped as data (not instructions) in the prompt to
-  mitigate prompt injection; summaries and answers are grounded in the
-  retrieved material.
+  mitigate prompt injection; summaries are grounded in the retrieved material
+  and chat answers use it as additional context.
 
 ### No context (shared)
 
 When no chunks match (or the user has no indexed material), the API returns
-`200` with `has_context: false`, an empty `sources` array, and a safe
-no-context message (in `answer` for chat, `summary` for the summary endpoint).
+`200` with `has_context: false` and an empty `sources` array. The summary
+endpoint returns its no-context `summary` message; the chat endpoint still
+answers the question normally.
 
 ### Ollama configuration
 

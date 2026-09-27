@@ -192,7 +192,7 @@ export default function Calendar() {
               </div>
             )}
             <div className="truncate max-w-[120px]">
-              <p className="text-sm font-medium text-white truncate">{user?.name || 'Mayank'}</p>
+              <p className="text-sm font-medium text-white truncate">{user?.name || 'Student'}</p>
               <p className="text-xs text-slate-400">{user?.role || 'Student'}</p>
             </div>
           </div>

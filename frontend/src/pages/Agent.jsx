@@ -1,5 +1,6 @@
 ﻿import React, { useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
+import { useUser } from '../context/UserContext';
 import {
   Search,
   Bell,
@@ -28,6 +29,10 @@ export default function Agent() {
   const [showNotifications, setShowNotifications] = useState(false);
   const [prompt, setPrompt] = useState('');
   const navigate = useNavigate();
+  const { user } = useUser();
+  const displayName = user?.name || 'Student';
+  const initial = user?.name ? user.name.charAt(0).toUpperCase() : 'S';
+  const firstName = user?.name ? user.name.split(' ')[0] : 'there';
 
   const handlePromptSubmit = (e) => {
     e.preventDefault();
@@ -159,10 +164,10 @@ export default function Agent() {
         <div className="flex items-center justify-between p-3 bg-slate-800/60 rounded-xl border border-slate-700/50">
           <div className="flex items-center gap-3">
             <div className="w-8 h-8 rounded-full bg-blue-500 text-white flex items-center font-semibold justify-center text-sm">
-              M
+              {initial}
             </div>
             <div>
-              <p className="text-sm font-medium text-white">Mayank</p>
+              <p className="text-sm font-medium text-white">{displayName}</p>
               <p className="text-xs text-slate-400">Student</p>
             </div>
           </div>
@@ -207,10 +212,10 @@ export default function Agent() {
 </div>
             <div className="flex items-center gap-3 pl-2 border-l border-slate-200">
               <div className="w-8 h-8 rounded-full bg-blue-600 text-white font-semibold flex items-center justify-center text-sm">
-                M
+                {initial}
               </div>
               <div className="text-left leading-tight">
-                <p className="text-sm font-semibold text-slate-700">Mayank</p>
+                <p className="text-sm font-semibold text-slate-700">{displayName}</p>
                 <p className="text-xs text-slate-400">Student</p>
               </div>
             </div>
@@ -229,7 +234,7 @@ export default function Agent() {
                 </div>
                 <div>
                   <h2 className="text-2xl font-bold text-slate-800 flex items-center gap-2">
-                    Hi Mayank! <span>👋</span>
+                    Hi {firstName}! <span>👋</span>
                   </h2>
                   <h3 className="text-xl font-bold text-blue-600 mt-0.5">I'm your AI Study Agent</h3>
                   <p className="text-xs text-slate-600 mt-2 max-w-xl leading-relaxed">

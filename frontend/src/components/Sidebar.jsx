@@ -1,4 +1,5 @@
 import { NavLink } from 'react-router-dom'
+import { useUser } from '../context/UserContext'
 
 const navigationItems = [
   { name: 'Home', path: '/dashboard', icon: '⌂' },
@@ -13,6 +14,9 @@ const navigationItems = [
 ]
 
 function Sidebar() {
+  const { user } = useUser()
+  const initial = user?.name ? user.name.charAt(0).toUpperCase() : 'S'
+
   return (
     <aside className="fixed left-0 top-0 z-40 hidden h-screen w-64 flex-col bg-[#17233b] text-white md:flex">
       <div className="flex items-center gap-3 border-b border-white/10 px-6 py-5">
@@ -48,11 +52,11 @@ function Sidebar() {
       <div className="border-t border-white/10 p-4">
         <div className="flex items-center gap-3 rounded-xl bg-white/5 p-3">
           <div className="flex h-10 w-10 items-center justify-center rounded-full bg-blue-500 font-semibold">
-            M
+            {initial}
           </div>
 
           <div className="min-w-0">
-            <p className="truncate text-sm font-semibold">Mayank</p>
+            <p className="truncate text-sm font-semibold">{user?.name || 'Student'}</p>
             <p className="text-xs text-slate-400">Student</p>
           </div>
         </div>

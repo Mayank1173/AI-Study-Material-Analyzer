@@ -1,7 +1,10 @@
 import { useState } from 'react';
+import { useUser } from '../context/UserContext';
 
 function Topbar() {
   const [showNotifications, setShowNotifications] = useState(false);
+  const { user } = useUser();
+  const initial = user?.name ? user.name.charAt(0).toUpperCase() : 'S';
 
   return (
     <header className="sticky top-0 z-30 border-b border-slate-200 bg-white/90 px-4 py-4 backdrop-blur sm:px-6 lg:px-8">
@@ -46,11 +49,11 @@ function Topbar() {
 
         <div className="flex items-center gap-3">
           <div className="flex h-10 w-10 items-center justify-center rounded-full bg-blue-600 font-semibold text-white">
-            M
+            {initial}
           </div>
 
           <div className="hidden sm:block">
-            <p className="text-sm font-semibold text-slate-800">Mayank Test</p>
+            <p className="text-sm font-semibold text-slate-800">{user?.name || 'Student'}</p>
             <p className="text-xs text-slate-500">Student</p>
           </div>
         </div>

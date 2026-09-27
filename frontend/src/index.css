@@ -1,1 +1,121 @@
 @import "tailwindcss";
+
+/* Class-based dark mode: the `dark` class is toggled on <html> by
+   src/lib/theme.js (Settings > Personalization). */
+@custom-variant dark (&:where(.dark, .dark *));
+
+.dark {
+  color-scheme: dark;
+
+  /* The ENTIRE application canvas goes dark (html element + body). */
+  background-color: #0b1220;
+
+  /* Light-tinted shades become deep tints in dark mode. This flips every
+     card/banner/gradient that uses the 50/100/200 range (they all resolve
+     through these theme variables) while leaving 500+ accent colors,
+     white text on colored buttons, and the dark sidebars untouched. */
+  --color-blue-50: #14264a;
+  --color-blue-100: #1b3564;
+  --color-blue-200: #1e40af;
+  --color-indigo-50: #1b1b46;
+  --color-indigo-100: #24235f;
+  --color-indigo-200: #312e81;
+  --color-purple-50: #241349;
+  --color-purple-100: #2e1a5e;
+  --color-purple-200: #4c1d95;
+  --color-pink-50: #33102d;
+  --color-pink-100: #451338;
+  --color-pink-200: #831843;
+  --color-emerald-50: #062e22;
+  --color-emerald-100: #0a3d2e;
+  --color-emerald-200: #065f46;
+  --color-teal-50: #0a2e30;
+  --color-teal-100: #0d3f42;
+  --color-teal-200: #115e59;
+  --color-amber-50: #2b2311;
+  --color-amber-100: #3d3115;
+  --color-amber-200: #78350f;
+  --color-red-50: #2f1517;
+  --color-red-100: #431a1d;
+  --color-red-200: #7f1d1d;
+}
+
+/* Dark-mode surface overrides (kept unlayered so they beat Tailwind
+   utilities without touching component markup). */
+.dark body {
+  background-color: #0b1220;
+  color: #e2e8f0;
+}
+
+.dark .bg-white {
+  background-color: #16213b;
+}
+
+.dark .bg-white\/80,
+.dark .bg-white\/90 {
+  background-color: #16213b;
+}
+
+.dark .bg-slate-50,
+.dark .bg-slate-100 {
+  background-color: #1c2942;
+}
+
+.dark .bg-\[\#f7f8fc\],
+.dark .bg-\[\#F8FAFC\],
+.dark .bg-\[\#F6F5F2\],
+.dark .bg-\[\#EFECE6\] {
+  background-color: #0b1220;
+}
+
+.dark .hover\:bg-slate-50:hover {
+  background-color: #1e2c47;
+}
+
+.dark .hover\:bg-white:hover {
+  background-color: #1e2c47;
+}
+
+.dark .border-slate-100,
+.dark .border-slate-200,
+.dark .border-slate-300 {
+  border-color: #334155;
+}
+
+.dark .text-slate-900,
+.dark .text-slate-800,
+.dark .text-slate-700 {
+  color: #e2e8f0;
+}
+
+.dark .text-slate-600,
+.dark .text-slate-500 {
+  color: #94a3b8;
+}
+
+/* Gradient ends that land on white become dark ends. */
+.dark .from-white {
+  --tw-gradient-from: #16213b;
+}
+
+.dark .to-white {
+  --tw-gradient-to: #16213b;
+}
+
+.dark .placeholder-slate-400::placeholder,
+.dark input::placeholder,
+.dark textarea::placeholder {
+  color: #64748b;
+}
+
+.dark input,
+.dark textarea,
+.dark select {
+  color: #e2e8f0;
+}
+
+.dark input.bg-slate-50,
+.dark textarea.bg-slate-50,
+.dark select.bg-slate-50 {
+  background-color: #1c2942;
+}

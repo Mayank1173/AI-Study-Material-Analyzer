@@ -1,11 +1,12 @@
-"""RAG answer service: orchestrates search -> context -> LLM -> grounded answer.
+"""RAG answer service: orchestrates search -> context -> LLM -> answer.
 
 This module ties together the Phase 2 knowledge base search with the Phase 3
 LLM provider through the context builder.  It enforces:
 
 - **Ownership**: search is always scoped to the authenticated user.
-- **Grounding**: the LLM prompt forces answers from retrieved material only.
-- **No-context behaviour**: when no material matches, a safe fallback is returned.
+- **Context, not a cage**: retrieved material is passed to the model as extra
+  context, and the model answers with its own general knowledge as well. When
+  nothing relevant is retrieved the model is still asked the question.
 - **Prompt-injection defence**: retrieved text is wrapped as data, not instructions.
 """
 
@@ -14,7 +15,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 
 from rag.context_builder import (
-    NO_CONTEXT_SYSTEM_PROMPT,
+    ConversationTurn,
     build_grounded_prompt,
 )
 from rag.knowledge_base import KnowledgeBase
@@ -64,14 +65,13 @@ def sources_from_results(results: list[SearchResult]) -> list[AnswerSource]:
     return sources
 
 
-_NO_CONTEXT_ANSWER = (
-    "I don't have enough information in your study materials to answer "
-    "that question. Please upload relevant documents or try rephrasing."
+_EMPTY_QUERY_ANSWER = (
+    "Please type a question and I'll do my best to help."
 )
 
 _FALLBACK_ANSWER = (
-    "I couldn't produce a clear answer from the retrieved material right "
-    "now. Please try rephrasing your question."
+    "I couldn't produce a clear answer to that right now. "
+    "Please try rephrasing your question."
 )
 
 # Number of chunks retrieved by default for a normal question-answer turn.
@@ -94,6 +94,21 @@ DEFAULT_ANSWER_TOP_K = 3
 DEFAULT_ANSWER_MAX_TOKENS = 512
 
 
+def _retrieval_query(query: str, history: list[ConversationTurn]) -> str:
+    """Build the text used for vector search.
+
+    A follow-up such as "give me another example" carries almost no searchable
+    terms on its own, so the previous user turn is prepended to keep retrieval
+    pointed at the same topic. Without history the query is used unchanged.
+    """
+    if not history:
+        return query
+    for turn in reversed(history):
+        if turn.role == "user" and turn.content.strip():
+            return f"{turn.content.strip()}\n{query}"
+    return query
+
+
 def answer_question(
     knowledge_base: KnowledgeBase,
     llm: LLMProvider,
@@ -104,8 +119,13 @@ def answer_question(
     material_id: str | None = None,
     top_k: int = DEFAULT_ANSWER_TOP_K,
     max_tokens: int = DEFAULT_ANSWER_MAX_TOKENS,
+    history: list[ConversationTurn] | None = None,
 ) -> AnswerResult:
-    """Answer a question grounded in the user's indexed study materials.
+    """Answer a question using the user's material as extra context.
+
+    The model always answers: retrieved chunks are supplied as supplementary
+    context when the search finds something relevant, and the question is
+    still answered from the model's own knowledge when it does not.
 
     Parameters
     ----------
@@ -127,21 +147,26 @@ def answer_question(
         Maximum number of tokens the model may generate for this answer
         (default ``DEFAULT_ANSWER_MAX_TOKENS = 512``), passed through to the
         provider instead of being hardcoded at the call site.
+    history:
+        Optional earlier turns, so follow-up questions are answered in the
+        context of the conversation.
 
     Returns
     -------
     AnswerResult
-        The grounded answer with source references.
+        The answer with any source references that were used as context.
     """
     if not query or not query.strip():
         return AnswerResult(
-            answer=_NO_CONTEXT_ANSWER,
+            answer=_EMPTY_QUERY_ANSWER,
             sources=[],
             has_context=False,
         )
 
+    turns = list(history or [])
+
     results = knowledge_base.search(
-        query.strip(),
+        _retrieval_query(query.strip(), turns),
         user_id=user_id,
         course_id=course_id,
         material_id=material_id,
@@ -150,14 +175,7 @@ def answer_question(
 
     sources = sources_from_results(results)
 
-    if not results:
-        return AnswerResult(
-            answer=_NO_CONTEXT_ANSWER,
-            sources=[],
-            has_context=False,
-        )
-
-    system_prompt, user_prompt = build_grounded_prompt(query, results)
+    system_prompt, user_prompt = build_grounded_prompt(query, results, turns)
 
     try:
         response: LLMResponse = llm.generate(
@@ -173,7 +191,7 @@ def answer_question(
                 "Please try again later."
             ),
             sources=sources,
-            has_context=True,
+            has_context=bool(results),
             model="",
         )
 
@@ -184,6 +202,6 @@ def answer_question(
     return AnswerResult(
         answer=answer,
         sources=sources,
-        has_context=True,
+        has_context=bool(results),
         model=response.model,
     )

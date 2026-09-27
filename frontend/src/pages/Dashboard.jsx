@@ -217,7 +217,7 @@ export default function Dashboard() {
                 </div>
               )}
               <div className="truncate max-w-[120px]">
-                <p className="text-sm font-medium text-white truncate">{user?.name || 'Mayank TS'}</p>
+                <p className="text-sm font-medium text-white truncate">{user?.name || 'Student'}</p>
                 <p className="text-xs text-slate-400">{user?.role || 'Student'}</p>
               </div>
             </div>
@@ -273,7 +273,7 @@ export default function Dashboard() {
                   </div>
                 )}
                 <div className="text-left leading-tight">
-                  <p className="text-sm font-semibold text-slate-700">{user?.name || 'Mayank TS'}</p>
+                  <p className="text-sm font-semibold text-slate-700">{user?.name || 'Student'}</p>
                   <p className="text-xs text-slate-400">{user?.role || 'Student'}</p>
                 </div>
               </Link>
@@ -289,7 +289,7 @@ export default function Dashboard() {
               <div className="flex items-center justify-between">
                 <div>
                   <h2 className="text-2xl font-bold text-slate-800">
-                    {timeGreeting}, <span className="text-blue-600">{user?.name || 'Mayank'}</span>
+                    {timeGreeting}, <span className="text-blue-600">{user?.name || 'Student'}</span>
                   </h2>
                   <p className="text-sm text-slate-500 mt-1">Ready to ace your next exam?</p>
                 </div>

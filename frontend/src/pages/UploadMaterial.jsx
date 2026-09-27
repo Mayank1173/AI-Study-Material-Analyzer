@@ -212,7 +212,7 @@ const [storageInfo] = useState(() => {
               </div>
             )}
             <div className="truncate max-w-[120px]">
-              <p className="text-sm font-medium text-white truncate">{user?.name || 'Mayank'}</p>
+              <p className="text-sm font-medium text-white truncate">{user?.name || 'Student'}</p>
               <p className="text-xs text-slate-400">{user?.role || 'Student'}</p>
             </div>
           </div>
@@ -267,7 +267,7 @@ const [storageInfo] = useState(() => {
                 </div>
               )}
               <div className="text-left leading-tight">
-                <p className="text-sm font-semibold text-slate-700">{user?.name || 'Mayank'}</p>
+                <p className="text-sm font-semibold text-slate-700">{user?.name || 'Student'}</p>
                 <p className="text-xs text-slate-400">{user?.role || 'Student'}</p>
               </div>
             </div>

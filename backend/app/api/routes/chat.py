@@ -24,6 +24,7 @@ from app.schemas.chat import (
     SummaryResponse,
 )
 from rag.answer import AnswerResult, answer_question
+from rag.context_builder import ConversationTurn
 from rag.knowledge_base import KnowledgeBase, get_knowledge_base
 from rag.llm import LLMProvider, MockProvider, OllamaProvider
 from rag.summary import generate_study_summary
@@ -93,7 +94,10 @@ def chat(
     kb: KnowledgeBase = Depends(_get_kb),
     llm: LLMProvider = Depends(get_llm_provider),
 ) -> ChatResponse:
-    """Answer a question using the user's indexed study materials.
+    """Answer a question, using the user's indexed study material as context.
+
+    The model answers from its own knowledge as well, so a general question
+    works with or without uploaded material.
 
     Security:
     - Authentication is required (JWT Bearer token).
@@ -102,6 +106,11 @@ def chat(
       multi-tenant isolation.
     """
     user_id = str(current_user.id)
+
+    history = [
+        ConversationTurn(role=turn.role, content=turn.content)
+        for turn in body.history
+    ]
 
     try:
         settings = get_settings()
@@ -113,6 +122,7 @@ def chat(
             course_id=body.course_id,
             material_id=body.material_id,
             max_tokens=settings.llm_max_tokens,
+            history=history,
         )
     except Exception:
         logger.exception("RAG answer_question failed")

@@ -13,7 +13,11 @@ from rag.answer import (
     AnswerResult,
     answer_question,
 )
-from rag.context_builder import NO_CONTEXT_SYSTEM_PROMPT, SYSTEM_PROMPT
+from rag.context_builder import (
+    NO_CONTEXT_SYSTEM_PROMPT,
+    SYSTEM_PROMPT,
+    ConversationTurn,
+)
 from rag.embeddings import DeterministicEmbedder
 from rag.knowledge_base import KnowledgeBase
 from rag.llm.mock_provider import MockProvider
@@ -148,33 +152,65 @@ class TestAnswerQuestion:
         assert src.course_id == "c-science"
         assert src.material_title == "Biology Notes"
 
-    def test_no_context_when_no_results(
+    def test_answers_general_question_without_matching_material(
         self, kb: KnowledgeBase, tmp_path: Path
     ) -> None:
-        llm = MockProvider()
-        result = answer_question(
-            kb, llm, query="quantum physics", user_id="alice"
+        """A question unrelated to the index is still answered normally."""
+        _index_biology(kb, tmp_path)
+        llm = MockProvider(
+            keyword_answers={"japan": "The capital of Japan is Tokyo."}
         )
+        result = answer_question(
+            kb, llm, query="What is the capital of Japan?", user_id="alice"
+        )
+        assert "Tokyo" in result.answer
+        assert "don't have enough information" not in result.answer.lower()
+        assert llm.call_count == 1
+
+    def test_answers_general_question_with_no_material_at_all(
+        self, kb: KnowledgeBase
+    ) -> None:
+        llm = MockProvider(
+            keyword_answers={"photosynthesis": "Plants use light to make food."}
+        )
+        result = answer_question(
+            kb, llm, query="What is photosynthesis?", user_id="alice"
+        )
+        assert "Plants use light" in result.answer
         assert result.has_context is False
-        assert "don't have enough information" in result.answer.lower()
+        assert result.sources == []
+        assert llm.call_count == 1
+        assert llm.last_system_prompt == NO_CONTEXT_SYSTEM_PROMPT
+
+    def test_has_no_context_when_no_results(self, kb: KnowledgeBase) -> None:
+        """No material is retrieved, but the question is still answered."""
+        llm = MockProvider(default_answer="Entropy is a measure of disorder.")
+        result = answer_question(kb, llm, query="entropy", user_id="alice")
+        assert result.has_context is False
+        assert "measure of disorder" in result.answer
+        assert "don't have enough information" not in result.answer.lower()
         assert result.sources == []
 
-    def test_no_context_for_empty_query(
+    def test_empty_query_asks_for_a_question(
         self, kb: KnowledgeBase, tmp_path: Path
     ) -> None:
         _index_biology(kb, tmp_path)
         llm = MockProvider()
         result = answer_question(kb, llm, query="", user_id="alice")
         assert result.has_context is False
-        assert "don't have enough information" in result.answer.lower()
+        assert "type a question" in result.answer.lower()
+        assert result.sources == []
+        assert llm.call_count == 0
 
-    def test_no_context_for_blank_query(
+    def test_blank_query_asks_for_a_question(
         self, kb: KnowledgeBase, tmp_path: Path
     ) -> None:
         _index_biology(kb, tmp_path)
         llm = MockProvider()
         result = answer_question(kb, llm, query="   ", user_id="alice")
         assert result.has_context is False
+        assert "type a question" in result.answer.lower()
+        assert llm.call_count == 0
 
     def test_llm_receives_grounded_system_prompt(
         self, kb: KnowledgeBase, tmp_path: Path
@@ -184,12 +220,12 @@ class TestAnswerQuestion:
         answer_question(kb, llm, query="photosynthesis", user_id="alice")
         assert llm.last_system_prompt == SYSTEM_PROMPT
 
-    def test_llm_not_called_when_no_context(
+    def test_llm_is_called_even_when_no_context(
         self, kb: KnowledgeBase, tmp_path: Path
     ) -> None:
         llm = MockProvider()
         answer_question(kb, llm, query="nonexistent topic", user_id="alice")
-        assert llm.call_count == 0
+        assert llm.call_count == 1
 
     def test_ownership_isolation(
         self, kb: KnowledgeBase, tmp_path: Path
@@ -200,6 +236,7 @@ class TestAnswerQuestion:
             kb, llm, query="photosynthesis", user_id="bob"
         )
         assert result.has_context is False
+        assert result.sources == []
 
     def test_course_filter_scopes_results(
         self, kb: KnowledgeBase, tmp_path: Path
@@ -318,8 +355,48 @@ class TestAnswerQuestion:
         llm = MockProvider()
         answer_question(kb, llm, query="photosynthesis", user_id="alice")
         assert llm.last_system_prompt == SYSTEM_PROMPT
-        assert "ONLY the retrieved study material" in SYSTEM_PROMPT
         assert "Never fabricate" in SYSTEM_PROMPT
+        assert "never the only source of knowledge" in SYSTEM_PROMPT
+
+    def test_history_is_passed_to_the_prompt(
+        self, kb: KnowledgeBase, tmp_path: Path
+    ) -> None:
+        _index_biology(kb, tmp_path)
+        llm = MockProvider()
+        answer_question(
+            kb,
+            llm,
+            query="Give me another example.",
+            user_id="alice",
+            history=[
+                ConversationTurn(role="user", content="What is photosynthesis?"),
+                ConversationTurn(
+                    role="assistant", content="Plants use light to make food."
+                ),
+            ],
+        )
+        assert "User: What is photosynthesis?" in llm.last_prompt
+        assert "Assistant: Plants use light to make food." in llm.last_prompt
+        assert "Question: Give me another example." in llm.last_prompt
+
+    def test_history_is_used_to_retrieve_for_follow_ups(
+        self, kb: KnowledgeBase, tmp_path: Path
+    ) -> None:
+        """A bare follow-up still retrieves the material it refers to."""
+        _index_biology(kb, tmp_path)
+        llm = MockProvider()
+        result = answer_question(
+            kb,
+            llm,
+            query="Give me another example.",
+            user_id="alice",
+            history=[
+                ConversationTurn(role="user", content="Explain photosynthesis."),
+            ],
+        )
+        assert result.has_context is True
+        assert len(result.sources) >= 1
+        assert all(s.material_id == "m-bio" for s in result.sources)
 
     def test_top_k_limits_results(
         self, kb: KnowledgeBase, tmp_path: Path
