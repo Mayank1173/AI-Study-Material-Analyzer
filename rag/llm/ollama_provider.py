@@ -11,7 +11,13 @@ import logging
 import urllib.error
 import urllib.request
 
-from rag.llm.base import LLMProvider, LLMResponse
+from rag.llm.base import (
+    LLMProvider,
+    LLMRequestError,
+    LLMResponse,
+    LLMTimeoutError,
+    LLMUnavailableError,
+)
 from rag.llm.cleanup import strip_thinking_sections
 
 logger = logging.getLogger(__name__)
@@ -19,7 +25,46 @@ logger = logging.getLogger(__name__)
 _DEFAULT_BASE_URL = "http://127.0.0.1:11434"
 _DEFAULT_MODEL = "qwen2.5-coder:7b"
 _DEFAULT_THINK = False
-_REQUEST_TIMEOUT_SECONDS = 120
+
+# Must comfortably exceed the wall-clock time a local CPU-only model needs for a
+# long answer. qwen2.5-coder:7b runs at roughly 3 tokens/sec on CPU, so a
+# 1100-token (10-mark) answer needs ~190s and a 1600-token (20-mark) answer
+# ~230s. The previous 120s default could not finish either and surfaced as a
+# spurious "temporarily unavailable".
+_REQUEST_TIMEOUT_SECONDS = 300
+
+_UNAVAILABLE_MESSAGE = (
+    "The language model is temporarily unavailable. Please try again later."
+)
+
+# Body of an Ollama HTTP error is JSON like {"error": "model not found"}.
+# Read defensively: it may be empty, truncated, or not JSON at all.
+_MAX_ERROR_BODY_BYTES = 512
+
+
+def _describe_http_error(exc: urllib.error.HTTPError) -> str:
+    """Return a short, safe description of an Ollama HTTP error response."""
+    try:
+        raw = exc.read()[:_MAX_ERROR_BODY_BYTES].decode("utf-8", errors="replace")
+    except Exception:  # pragma: no cover - defensive, body already consumed
+        return "<unreadable body>"
+    try:
+        parsed = json.loads(raw)
+    except (json.JSONDecodeError, ValueError):
+        return raw.strip() or "<empty body>"
+    if isinstance(parsed, dict) and isinstance(parsed.get("error"), str):
+        return parsed["error"].strip() or "<empty error>"
+    return raw.strip() or "<empty body>"
+
+
+def _is_timeout(exc: BaseException) -> bool:
+    """True when *exc* (or a ``URLError`` it wraps) represents a timeout."""
+    if isinstance(exc, TimeoutError):
+        return True
+    reason = getattr(exc, "reason", None)
+    if isinstance(reason, TimeoutError):
+        return True
+    return "timed out" in str(exc).lower()
 
 
 class OllamaProvider(LLMProvider):
@@ -95,20 +140,110 @@ class OllamaProvider(LLMProvider):
 
         try:
             with urllib.request.urlopen(req, timeout=self._timeout) as resp:
-                body = json.loads(resp.read().decode("utf-8"))
-        except (urllib.error.URLError, TimeoutError, OSError) as exc:
-            logger.warning("Ollama request failed: %s", exc)
-            raise RuntimeError(
-                "The language model is temporarily unavailable. "
-                "Please try again later."
+                raw_body = resp.read().decode("utf-8")
+        except urllib.error.HTTPError as exc:
+            # Checked first: HTTPError subclasses URLError, and a 404 (unknown
+            # model) must not masquerade as a transient outage.
+            detail = _describe_http_error(exc)
+            logger.error(
+                "Ollama rejected request: HTTP %s for model %r at %s: %s",
+                exc.code,
+                self._model,
+                self._base_url,
+                detail,
+            )
+            raise LLMRequestError(
+                f"The language model rejected the request (HTTP {exc.code}). "
+                "Please check the configured model."
+            ) from exc
+        except urllib.error.URLError as exc:
+            if _is_timeout(exc):
+                logger.error(
+                    "Ollama generation timed out after %ss (model=%r, base_url=%s). "
+                    "The model is reachable but too slow: raise LLM_TIMEOUT_SECONDS "
+                    "or lower the generation budget.",
+                    self._timeout,
+                    self._model,
+                    self._base_url,
+                )
+                raise LLMTimeoutError(
+                    f"The language model took longer than {self._timeout}s to "
+                    "answer. Please try a shorter answer."
+                ) from exc
+            logger.warning(
+                "Could not reach Ollama at %s: %s", self._base_url, exc
+            )
+            raise LLMUnavailableError(_UNAVAILABLE_MESSAGE) from exc
+        except TimeoutError as exc:
+            logger.error(
+                "Ollama generation timed out after %ss (model=%r, base_url=%s). "
+                "The model is reachable but too slow: raise LLM_TIMEOUT_SECONDS "
+                "or lower the generation budget.",
+                self._timeout,
+                self._model,
+                self._base_url,
+            )
+            raise LLMTimeoutError(
+                f"The language model took longer than {self._timeout}s to answer. "
+                "Please try a shorter answer."
+            ) from exc
+        except OSError as exc:
+            logger.warning("Ollama request failed at %s: %s", self._base_url, exc)
+            raise LLMUnavailableError(_UNAVAILABLE_MESSAGE) from exc
+
+        try:
+            body = json.loads(raw_body)
+        except (json.JSONDecodeError, UnicodeDecodeError) as exc:
+            logger.error(
+                "Ollama returned a non-JSON body for model %r: %.200r",
+                self._model,
+                raw_body,
+            )
+            raise LLMRequestError(
+                "The language model returned an unreadable response."
             ) from exc
 
+        if not isinstance(body, dict):
+            logger.error(
+                "Ollama returned a non-object body for model %r: %.200r",
+                self._model,
+                raw_body,
+            )
+            raise LLMRequestError(
+                "The language model returned an unreadable response."
+            )
+
         message = body.get("message", {})
-        text = strip_thinking_sections(message.get("content", "")).strip()
+        if not isinstance(message, dict):
+            logger.error(
+                "Ollama response for model %r has no usable message field: %.200r",
+                self._model,
+                raw_body,
+            )
+            raise LLMRequestError(
+                "The language model returned an unreadable response."
+            )
+
+        text = strip_thinking_sections(message.get("content", "") or "").strip()
+        if not text:
+            # An empty completion is a generation failure. Returning it as an
+            # empty answer would let callers present it as a real answer.
+            logger.warning(
+                "Ollama returned an empty completion for model %r "
+                "(done_reason=%r, prompt_tokens=%r, completion_tokens=%r)",
+                self._model,
+                body.get("done_reason"),
+                body.get("prompt_eval_count"),
+                body.get("eval_count"),
+            )
+            raise LLMRequestError(
+                "The language model returned an empty response."
+            )
+
         return LLMResponse(
             text=text,
             model=self._model,
-            finish_reason="stop",
+            finish_reason=str(body.get("done_reason") or "stop"),
             usage={
                 "prompt_tokens": body.get("prompt_eval_count", 0),
                 "completion_tokens": body.get("eval_count", 0),

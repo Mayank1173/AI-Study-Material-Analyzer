@@ -98,3 +98,68 @@ export async function registerRequest(name, email, password) {
 export async function meRequest() {
   return apiFetch('/api/auth/me', { method: 'GET' });
 }
+export async function analyzePyqs({ courseId, numQuestions, answerLength, selectedMarks, fileIds } = {}) {
+  const payload = {
+    course_id: courseId || null,
+    num_questions: numQuestions || 10,
+    answer_length: answerLength || 'Medium',
+    selected_marks: selectedMarks || null,
+    file_ids: fileIds || null,
+  };
+  return apiFetch('/api/pyqs/analyze', { method: 'POST', body: payload });
+}
+
+export async function listMyCourses() {
+  const data = await apiFetch('/api/courses/mine?page=1&page_size=100');
+  return (data && data.items) || [];
+}
+
+export async function createCourse({ name, code, description }) {
+  return apiFetch('/api/courses', {
+    method: 'POST',
+    body: { name, code, description },
+  });
+}
+
+export const PYQ_MATERIAL_TYPE = 'pyq';
+
+export async function uploadPyqPaper({ courseId, file }) {
+  const ext = (file.name.match(/\.[^.]+$/) || [''])[0];
+  const title = ext ? file.name.slice(0, -ext.length) : file.name;
+  const form = new FormData();
+  form.append('course_id', courseId);
+  form.append('title', title || file.name);
+  // Question papers are analysis-only: this type keeps them out of the RAG
+  // index so they can never ground their own answers.
+  form.append('material_type', PYQ_MATERIAL_TYPE);
+  form.append('file', file);
+  return apiFetch('/api/materials/upload', { method: 'POST', body: form });
+}
+
+function toSnakeCaseStyles(styles = {}) {
+  const payload = {};
+  for (const [key, value] of Object.entries(styles)) {
+    if (value) {
+      payload[key.replace(/([A-Z])/g, '_$1').toLowerCase()] = true;
+    }
+  }
+  return payload;
+}
+
+function parseMarks(selectedMarks) {
+  const value = parseInt(String(selectedMarks ?? '').replace(/[^0-9]/g, ''), 10);
+  return Number.isFinite(value) && value > 0 ? value : null;
+}
+
+export async function generatePyqAnswer({ question, courseId, courseName, selectedMarks, answerLength, styles } = {}) {
+  const stylePayload = toSnakeCaseStyles(styles);
+  const payload = {
+    question,
+    course_id: courseId || null,
+    course_name: courseName || null,
+    marks: parseMarks(selectedMarks),
+    answer_format: answerLength || 'Short',
+    styles: Object.keys(stylePayload).length ? stylePayload : null,
+  };
+  return apiFetch('/api/pyqs/answer', { method: 'POST', body: payload });
+}

@@ -8,9 +8,15 @@ from unittest import mock
 
 import pytest
 
-from rag.llm.base import LLMProvider, LLMResponse
+from rag.llm.base import (
+    LLMProvider,
+    LLMRequestError,
+    LLMResponse,
+    LLMTimeoutError,
+    LLMUnavailableError,
+)
 from rag.llm.mock_provider import MockProvider
-from rag.llm.ollama_provider import OllamaProvider
+from rag.llm.ollama_provider import _REQUEST_TIMEOUT_SECONDS, OllamaProvider
 
 
 class TestLLMResponse:
@@ -146,7 +152,7 @@ class TestOllamaProviderConfig:
 
     def test_timeout_default_is_generous_for_local_models(self) -> None:
         llm = OllamaProvider()
-        assert llm._timeout == 120
+        assert llm._timeout == 300
 
     def test_timeout_is_configurable(self) -> None:
         llm = OllamaProvider(timeout=45)
@@ -156,7 +162,7 @@ class TestOllamaProviderConfig:
         llm = OllamaProvider(model="qwen3:4b")
         assert llm._model == "qwen3:4b"
         assert llm._think is False
-        assert llm._timeout == 120
+        assert llm._timeout == 300
 
 
 class TestOllamaRequestPayload:
@@ -193,14 +199,15 @@ class TestOllamaRequestPayload:
 
 
 class TestOllamaHTTPBehavior:
-    def _fake_response(self) -> "mock.Mock":
-        body = json.dumps(
-            {
-                "message": {"content": "Physics studies matter."},
-                "prompt_eval_count": 8,
-                "eval_count": 4,
-            }
-        ).encode("utf-8")
+    def _fake_response(self, body: dict | None = None) -> "mock.Mock":
+        payload = body or {
+            "message": {"content": "Physics studies matter."},
+            "prompt_eval_count": 8,
+            "eval_count": 4,
+        }
+        return self._fake_response_raw(json.dumps(payload).encode("utf-8"))
+
+    def _fake_response_raw(self, body: bytes) -> "mock.Mock":
         resp = mock.Mock()
         resp.__enter__ = mock.Mock(return_value=resp)
         resp.__exit__ = mock.Mock(return_value=False)
@@ -220,7 +227,7 @@ class TestOllamaHTTPBehavior:
         assert payload["model"] == "qwen2.5-coder:7b"
         assert payload["think"] is False
         assert payload["options"]["temperature"] == 0.1
-        assert urlopen.call_args.kwargs["timeout"] == 120
+        assert urlopen.call_args.kwargs["timeout"] == 300
         assert result.text == "Physics studies matter."
         assert result.model == "qwen2.5-coder:7b"
         assert result.usage["completion_tokens"] == 4
@@ -261,19 +268,69 @@ class TestOllamaHTTPBehavior:
             result = OllamaProvider().generate("Hi")
         assert result.text == "Physics studies matter."
 
-    def test_timeout_raises_safe_runtime_error(self) -> None:
+    def test_timeout_is_reported_as_a_timeout_not_an_outage(self) -> None:
+        """A slow model must not be reported as 'temporarily unavailable'."""
         with mock.patch(
             "urllib.request.urlopen", side_effect=TimeoutError("timed out")
         ):
-            with pytest.raises(RuntimeError) as exc_info:
+            with pytest.raises(LLMTimeoutError) as exc_info:
                 OllamaProvider().generate("Hi")
-        assert "temporarily unavailable" in str(exc_info.value)
+        message = str(exc_info.value)
+        assert "temporarily unavailable" not in message.lower()
+        assert "longer than" in message
+        # Still a RuntimeError, so existing handlers keep working.
+        assert isinstance(exc_info.value, RuntimeError)
 
     def test_urlerror_raises_safe_runtime_error(self) -> None:
         with mock.patch(
             "urllib.request.urlopen",
             side_effect=urllib.error.URLError("connection refused"),
         ):
-            with pytest.raises(RuntimeError) as exc_info:
+            with pytest.raises(LLMUnavailableError) as exc_info:
                 OllamaProvider().generate("Hi")
         assert "temporarily unavailable" in str(exc_info.value)
+
+    def test_urlerror_wrapping_a_timeout_is_a_timeout(self) -> None:
+        with mock.patch(
+            "urllib.request.urlopen",
+            side_effect=urllib.error.URLError(TimeoutError("timed out")),
+        ):
+            with pytest.raises(LLMTimeoutError):
+                OllamaProvider().generate("Hi")
+
+    def test_http_error_is_a_request_error_not_an_outage(self) -> None:
+        """A 404 unknown-model must not masquerade as a transient outage."""
+        import io
+
+        error = urllib.error.HTTPError(
+            url="http://127.0.0.1:11434/api/chat",
+            code=404,
+            msg="Not Found",
+            hdrs=None,
+            fp=io.BytesIO(b'{"error":"model \\"nope\\" not found"}'),
+        )
+        with mock.patch("urllib.request.urlopen", side_effect=error):
+            with pytest.raises(LLMRequestError) as exc_info:
+                OllamaProvider().generate("Hi")
+        message = str(exc_info.value)
+        assert "temporarily unavailable" not in message.lower()
+        assert "404" in message
+
+    def test_empty_completion_is_an_error_not_an_empty_answer(self) -> None:
+        resp = self._fake_response({"message": {"content": "  "}, "done_reason": "stop"})
+        with mock.patch("urllib.request.urlopen", return_value=resp):
+            with pytest.raises(LLMRequestError):
+                OllamaProvider().generate("Hi")
+
+    def test_non_json_body_is_a_request_error(self) -> None:
+        resp = self._fake_response_raw(b"not json at all")
+        with mock.patch("urllib.request.urlopen", return_value=resp):
+            with pytest.raises(LLMRequestError):
+                OllamaProvider().generate("Hi")
+
+    def test_default_timeout_is_configured_in_settings(self) -> None:
+        """The shipped default must be the same raised 300s value."""
+        from app.core.config import _DEFAULT_LLM_TIMEOUT_SECONDS
+
+        assert _DEFAULT_LLM_TIMEOUT_SECONDS == 300
+        assert _REQUEST_TIMEOUT_SECONDS == 300

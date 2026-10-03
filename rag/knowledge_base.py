@@ -143,6 +143,15 @@ class KnowledgeBase:
             top_k=top_k,
         )
 
+    def embed(self, texts: list[str]) -> list[tuple[float, ...]]:
+        """Embed arbitrary texts with this knowledge base's embedder.
+
+        Exposes the configured embedding backend so other features (for example
+        PYQ question clustering) can reuse the same vectors as retrieval instead
+        of reaching into private state or building a second embedder.
+        """
+        return self._embedder.embed(texts)
+
     def count(
         self,
         user_id: str | None = None,

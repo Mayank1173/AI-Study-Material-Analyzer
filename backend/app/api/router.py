@@ -24,3 +24,6 @@ api_router.include_router(materials_router)
 api_router.include_router(chat_router)
 
 __all__ = ["api_router"]
+from app.api.routes.pyqs import router as pyqs_router
+api_router.include_router(pyqs_router)
+

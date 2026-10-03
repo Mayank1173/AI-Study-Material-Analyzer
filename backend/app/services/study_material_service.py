@@ -21,6 +21,65 @@ from app.services.pagination import escape_like
 logger = logging.getLogger(__name__)
 
 
+# ---------------------------------------------------------------------------
+# Material purpose: study material vs PYQ / question bank
+# ---------------------------------------------------------------------------
+# The two kinds of upload have strictly separate roles:
+#
+#   PYQ papers / question banks -> PYQ analysis ONLY
+#       (frequency, repetition, similarity, years, ranking, importance)
+#
+#   Study materials (notes, PPTs, PDFs, module notes) -> the RAG index, and
+#       therefore the ONLY grounding source for generated answers.
+#
+# The RAG index is what answer generation searches. If a question paper were
+# indexed there it could ground its own answer, which is exactly the confusion
+# this classification exists to prevent, so question papers are deliberately
+# kept out of the vector store.
+
+PYQ_MATERIAL_TYPES = frozenset(
+    {
+        "pyq",
+        "pyqs",
+        "pyq_paper",
+        "pyq_papers",
+        "pyq_bank",
+        "question_paper",
+        "question_papers",
+        "question_bank",
+        "question_banks",
+        "previous_year_question",
+        "previous_year_questions",
+        "previous_year_paper",
+        "previous_year_papers",
+        "qp",
+        "qp_paper",
+        "exam_paper",
+        "exam_papers",
+    }
+)
+
+
+def _normalize_material_type(material_type: str | None) -> str:
+    if not material_type:
+        return ""
+    return material_type.strip().lower().replace("-", "_").replace(" ", "_")
+
+
+def is_pyq_material_type(material_type: str | None) -> bool:
+    """True when a material is a question paper / question bank.
+
+    Used to keep question papers out of the RAG index so they serve PYQ
+    analysis only, never answer grounding.
+    """
+    return _normalize_material_type(material_type) in PYQ_MATERIAL_TYPES
+
+
+def is_rag_grounding_material(material_type: str | None) -> bool:
+    """True when a material may be indexed as a study-material grounding source."""
+    return not is_pyq_material_type(material_type)
+
+
 def assert_owns_material(user: User, material: StudyMaterial) -> None:
     """Materials are private to the user who uploaded them."""
     if material.uploaded_by != user.id:
@@ -240,6 +299,12 @@ def process_material(
 
     Lifecycle: uploaded/failed -> processing -> processed | failed.
     Re-indexing the same material replaces prior chunks (idempotent).
+
+    Question papers / question banks (``material_type`` in
+    :data:`PYQ_MATERIAL_TYPES`) are an exception: they are extracted so the file
+    is verified readable, but they are deliberately **not** indexed into the RAG
+    store. They feed PYQ analysis only, and keeping them out of the vector store
+    is what guarantees they can never ground their own answers.
     """
     material = get_study_material(db, material_id)
     material_id_str = str(material.id)
@@ -269,6 +334,18 @@ def process_material(
             db, material_id, error_message="Stored file not found on disk"
         )
         return get_study_material(db, material_id)
+
+    if is_pyq_material_type(material.material_type):
+        # Analysis-only: verify the paper is readable, then stop. Never index.
+        try:
+            from rag.extraction import extract_document
+
+            extract_document(path, file_type=get_extension(material.file_name))
+        except Exception as exc:
+            error_msg = str(exc)[:MAX_ERROR_MESSAGE_LENGTH]
+            logger.exception("PYQ extraction failed for material %s", material_id_str)
+            return mark_material_failed(db, material_id, error_message=error_msg)
+        return mark_material_processed(db, material_id)
 
     try:
         from rag.models import SourceRef

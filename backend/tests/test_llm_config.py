@@ -57,7 +57,7 @@ class TestTimeoutConfig:
     ) -> None:
         monkeypatch.delenv("LLM_TIMEOUT_SECONDS", raising=False)
         get_settings.cache_clear()
-        assert get_settings().llm_timeout_seconds == 120
+        assert get_settings().llm_timeout_seconds == 300
         get_settings.cache_clear()
 
     def test_timeout_is_read_from_env(self, monkeypatch) -> None:
@@ -115,7 +115,7 @@ class TestProviderChain:
         provider = get_llm_provider()
         assert isinstance(provider, OllamaProvider)
         assert provider._think is False
-        assert provider._timeout == 120
+        assert provider._timeout == 300
         get_settings.cache_clear()
 
     def test_provider_receives_configured_think_and_timeout(

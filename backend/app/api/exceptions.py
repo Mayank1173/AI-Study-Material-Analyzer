@@ -25,6 +25,7 @@ import logging
 from typing import Any
 
 from fastapi import FastAPI, HTTPException, Request
+from fastapi.encoders import jsonable_encoder
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from sqlalchemy.exc import SQLAlchemyError
@@ -110,7 +111,10 @@ async def http_exception_handler(
 async def validation_exception_handler(
     request: Request, exc: RequestValidationError
 ) -> JSONResponse:
-    content = {"detail": exc.errors()}
+    # ``exc.errors()`` can carry a live exception object in ``ctx`` (raised by
+    # custom pydantic validators), which is not JSON serializable. Encoding it
+    # keeps the standard 422 detail list instead of failing with a 500.
+    content = {"detail": jsonable_encoder(exc.errors())}
     content.update(_error_body(422, "Request validation failed"))
     return JSONResponse(status_code=422, content=content)
 

@@ -1,6 +1,13 @@
-﻿import React, { useState } from 'react';
+﻿import React, { useCallback, useMemo, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { useUser } from '../context/UserContext';
+import {
+  analyzePyqs,
+  createCourse,
+  generatePyqAnswer,
+  listMyCourses,
+  uploadPyqPaper,
+} from '../lib/api';
 import {
   Search,
   Bell,
@@ -26,25 +33,37 @@ import {
   Target,
   Sliders,
   Sparkle,
-  ArrowRight
+  ArrowRight,
+  Loader2
 } from 'lucide-react';
+
+const GENERIC_ANSWER_ERROR = 'Could not generate an answer. Please try again.';
+
+// Prefer the backend's own explanation when one was returned. `apiFetch` tags
+// HTTP error responses with `status`, so a message carrying one came from the
+// server (e.g. a 504 "took too long" or 503 "temporarily unavailable" detail)
+// and says far more than our generic copy. Network-level failures (e.g.
+// "Failed to fetch") carry no status and fall back instead of leaking
+// browser internals to the user.
+function answerErrorMessage(err) {
+  const fromServer =
+    typeof err?.status === 'number' ? String(err.message ?? '').trim() : '';
+  return fromServer || GENERIC_ANSWER_ERROR;
+}
 
 export default function PYQs() {
   const [showNotifications, setShowNotifications] = useState(false);
   const { user } = useUser();
 
   // State for Uploaded Files
-  const [files, setFiles] = useState([
-    { id: 1, name: 'DCCN_2023.pdf', size: '1.2 MB', status: 'ready' },
-    { id: 2, name: 'DCCN_2024.pdf', size: '1.4 MB', status: 'ready' },
-    { id: 3, name: 'DCCN_2025.pdf', size: '1.1 MB', status: 'ready' },
-    { id: 4, name: 'DCCN_Model_Paper.pdf', size: '980 KB', status: 'ready' },
-  ]);
+  const [files, setFiles] = useState([]);
 
   // State for Settings
   const [selectedCourse, setSelectedCourse] = useState('Data Communication and Computer Networks (DCCN)');
+  const [selectedCourseId, setSelectedCourseId] = useState(null);
   const [numQuestions, setNumQuestions] = useState('Top 10');
-  const [answerLength, setAnswerLength] = useState('Detailed');
+  const [customNumQuestions, setCustomNumQuestions] = useState(10);
+  const [answerLength, setAnswerLength] = useState('Short');
   const [selectedMarks, setSelectedMarks] = useState('10 Marks');
   
   // Style Checkboxes State
@@ -62,88 +81,241 @@ export default function PYQs() {
   // Questions List
   const [expandedQuestionId, setExpandedQuestionId] = useState(null);
   const [isAnalyzing, setIsAnalyzing] = useState(false);
+  const [analysisError, setAnalysisError] = useState('');
+  const [failedFiles, setFailedFiles] = useState([]);
 
-  const initialQuestions = [
-    {
-      id: 1,
-      question: 'Explain the OSI reference model with a neat diagram.',
-      yearsAppeared: '2023, 2024, 2025',
-      unit: 'Unit 1',
-      marks: 10,
-      importance: 'High',
-      answer: 'The OSI (Open Systems Interconnection) model defines a networking framework to implement protocols in seven layers: Physical, Data Link, Network, Transport, Session, Presentation, and Application layers.'
-    },
-    {
-      id: 2,
-      question: 'Explain TCP and UDP protocols. Compare their differences.',
-      yearsAppeared: '2024, 2025',
-      unit: 'Unit 2',
-      marks: 10,
-      importance: 'High',
-      answer: 'TCP is connection-oriented, reliable, and byte-stream based with error-checking and flow control. UDP is connectionless, faster, lightweight, and does not guarantee packet delivery.'
-    },
-    {
-      id: 3,
-      question: 'What is routing? Explain distance vector routing algorithm.',
-      yearsAppeared: '2023, 2024',
-      unit: 'Unit 3',
-      marks: 10,
-      importance: 'High',
-      answer: 'Routing is the process of selecting a path for traffic in a network. Distance Vector Routing relies on Bellman-Ford algorithm where routers share distance vectors with immediate neighbors.'
-    },
-    {
-      id: 4,
-      question: 'Explain network security threats and their countermeasures.',
-      yearsAppeared: '2023, 2025',
-      unit: 'Unit 4',
-      marks: 10,
-      importance: 'High',
-      answer: 'Threats include eavesdropping, spoofing, Denial-of-Service (DoS), and malware. Countermeasures involve encryption (AES/RSA), firewalls, intrusion detection systems (IDS), and strong authentication.'
-    },
-    {
-      id: 5,
-      question: 'What is congestion control? Explain different techniques.',
-      yearsAppeared: '2024',
-      unit: 'Unit 3',
-      marks: 10,
-      importance: 'Medium',
-      answer: 'Congestion control regulates traffic entering a telecommunication network to avoid link overload. Open-loop mechanisms prevent congestion, while closed-loop mechanisms detect and resolve it dynamically.'
-    },
-  ];
+  const [questions, setQuestions] = useState([]);
+  const [hasAnalyzed, setHasAnalyzed] = useState(false);
+  const [analysisStats, setAnalysisStats] = useState({
+    totalQuestions: 0,
+    repeated: 0,
+    topPriority: 0,
+    papersAnalyzed: 0,
+  });
 
-  const [questions, setQuestions] = useState(initialQuestions);
+  // On-demand answer generation state, keyed by question id
+  const [answers, setAnswers] = useState({});
+  const [answerLoadingId, setAnswerLoadingId] = useState(null);
+  const [answerErrors, setAnswerErrors] = useState({});
+
+  const resetAnalysisState = useCallback(() => {
+    setQuestions([]);
+    setHasAnalyzed(false);
+    setExpandedQuestionId(null);
+    setAnswers({});
+    setAnswerErrors({});
+    setAnalysisError('');
+    setFailedFiles([]);
+    setAnalysisStats({ totalQuestions: 0, repeated: 0, topPriority: 0, papersAnalyzed: 0 });
+  }, []);
 
   // Toggle Checkbox
   const handleStyleChange = (key) => {
     setStyles((prev) => ({ ...prev, [key]: !prev[key] }));
   };
 
-  // Add Dummy File
+  // Keep the real File objects so they can actually be uploaded and analyzed.
   const handleFileUpload = (e) => {
-    const uploadedFiles = Array.from(e.target.files);
-    if (uploadedFiles.length > 0) {
-      const newFileItems = uploadedFiles.map((file, idx) => ({
-        id: Date.now() + idx,
-        name: file.name,
-        size: `${(file.size / (1024 * 1024)).toFixed(1)} MB`,
-        status: 'ready'
+    const selected = Array.from(e.target.files || []);
+    e.target.value = '';
+    if (selected.length === 0) return;
+    const newFileItems = selected.map((file, idx) => ({
+      id: `${Date.now()}_${idx}_${file.name}`,
+      file,
+      name: file.name,
+      size: `${(file.size / (1024 * 1024)).toFixed(1)} MB`,
+      status: 'ready'
+    }));
+    setFiles((prev) => [...prev, ...newFileItems]);
+    // A new selection invalidates any previous analysis.
+    resetAnalysisState();
+  };
+
+  // Remove only the selected file; never auto-analyze the remainder.
+  const handleRemoveFile = (id) => {
+    setFiles((prev) => prev.filter((f) => f.id !== id));
+    // Old results no longer represent the current file set, so drop them
+    // rather than presenting them as if they did.
+    resetAnalysisState();
+  };
+
+  // Resolve the selected course to a real course id (analysis is course-scoped).
+  const resolveCourseId = useCallback(async () => {
+    if (selectedCourseId) return selectedCourseId;
+    const courses = await listMyCourses();
+    const match = courses.find((c) => c.name === selectedCourse) || courses[0];
+    if (match) {
+      setSelectedCourseId(match.id);
+      return match.id;
+    }
+    const created = await createCourse({
+      name: selectedCourse,
+      code: `PYQ${Date.now().toString(36).toUpperCase().slice(-5)}`,
+      description: 'Question papers uploaded from the PYQ Analyzer',
+    });
+    setSelectedCourseId(created.id);
+    return created.id;
+  }, [selectedCourse, selectedCourseId]);
+
+  // Trigger Analysis
+  const handleAnalyze = async () => {
+    // Duplicate-request protection: never start a second analysis while one
+    // is in flight.
+    if (isAnalyzing) return;
+
+    if (files.length === 0) {
+      setAnalysisError('Please upload at least one question paper or question bank before analyzing.');
+      return;
+    }
+
+    const numQCount = getSelectedQuestionCount();
+
+    // Every new analysis replaces the previous one.
+    setIsAnalyzing(true);
+    setAnalysisError('');
+    setFailedFiles([]);
+    setQuestions([]);
+    setHasAnalyzed(false);
+    setExpandedQuestionId(null);
+    setAnswers({});
+    setAnswerErrors({});
+    setAnalysisStats({ totalQuestions: 0, repeated: 0, topPriority: 0, papersAnalyzed: 0 });
+
+    try {
+      const courseId = await resolveCourseId();
+
+      // Upload the actually-selected papers, then analyze exactly those files.
+      const fileIds = [];
+      const uploadFailures = [];
+      for (const item of files) {
+        try {
+          const material = await uploadPyqPaper({ courseId, file: item.file });
+          fileIds.push(material.id);
+        } catch (err) {
+          console.error('PYQ upload failed:', err);
+          uploadFailures.push(item.name);
+        }
+      }
+
+      if (fileIds.length === 0) {
+        setFailedFiles(uploadFailures);
+        setAnalysisError('Could not extract questions from one or more files.');
+        return;
+      }
+
+      const res = await analyzePyqs({
+        courseId,
+        numQuestions: numQCount,
+        answerLength,
+        selectedMarks,
+        fileIds,
+      });
+
+      const failed = [...(res.failed_files || []), ...uploadFailures];
+      setFailedFiles(failed);
+
+      const backendQuestions = (res.questions || []).map((q, idx) => ({
+        id: idx + 1,
+        question: q.question,
+        yearsAppeared: Array.isArray(q.years_appeared) ? q.years_appeared.join(', ') : (q.years_appeared || ''),
+        unit: q.unit || '-',
+        marks: q.marks || '-',
+        importance: q.importance || 'Medium',
+        frequency: q.frequency || 1,
+        files: q.files || []
       }));
-      setFiles((prev) => [...prev, ...newFileItems]);
+
+      // Distinguish "nothing could be read" from "read fine, no questions".
+      const readCount = (res.analyzed_files || []).length;
+      if (readCount === 0) {
+        setAnalysisError('Could not extract questions from one or more files.');
+        return;
+      }
+
+      setQuestions(backendQuestions);
+      setAnalysisStats({
+        totalQuestions: res.total_questions ?? backendQuestions.length,
+        repeated: res.repeated ?? 0,
+        topPriority: res.top_priority ?? 0,
+        papersAnalyzed: res.summary?.papers_analyzed ?? readCount,
+      });
+
+      if (backendQuestions.length === 0) {
+        setAnalysisError('No questions could be extracted from the uploaded files.');
+        return;
+      }
+
+      setHasAnalyzed(true);
+    } catch (err) {
+      console.error('Analysis failed:', err);
+      setQuestions([]);
+      setHasAnalyzed(false);
+      setAnalysisError('PYQ analysis failed. Please try again.');
+    } finally {
+      setIsAnalyzing(false);
     }
   };
 
-  // Remove File
-  const handleRemoveFile = (id) => {
-    setFiles((prev) => prev.filter((f) => f.id !== id));
+  // Generate the answer for a single question on demand
+  const handleViewAnswer = async (question) => {
+    const questionId = question.id;
+    if (answers[questionId]) {
+      setExpandedQuestionId(expandedQuestionId === questionId ? null : questionId);
+      return;
+    }
+    setExpandedQuestionId(questionId);
+    setAnswerLoadingId(questionId);
+    setAnswerErrors((prev) => ({ ...prev, [questionId]: '' }));
+    try {
+      const courseId = selectedCourseId || await resolveCourseId();
+      const res = await generatePyqAnswer({
+        question: question.question,
+        courseId,
+        courseName: selectedCourse,
+        selectedMarks,
+        answerLength,
+        styles,
+      });
+      setAnswers((prev) => ({
+        ...prev,
+        [questionId]: {
+          answer: res.answer || '',
+          hasContext: Boolean(res.has_context),
+          sources: res.sources || [],
+        },
+      }));
+    } catch (err) {
+      console.error('Answer generation failed:', err);
+      setAnswerErrors((prev) => ({
+        ...prev,
+        [questionId]: answerErrorMessage(err),
+      }));
+    } finally {
+      setAnswerLoadingId(null);
+    }
   };
 
-  // Trigger Analysis
-  const handleAnalyze = () => {
-    setIsAnalyzing(true);
-    setTimeout(() => {
-      setIsAnalyzing(false);
-    }, 1000);
+  const getSelectedQuestionCount = () => {
+    if (numQuestions === 'Custom') {
+      return customNumQuestions;
+    }
+    const match = numQuestions.match(/\d+/);
+    return match ? parseInt(match[0]) : 10;
   };
+
+  // Repeated topics derived from the real analysis result, ranked by how often
+  // each topic was seen across the analyzed papers.
+  const repeatedTopics = useMemo(() => {
+    const counts = new Map();
+    for (const q of questions) {
+      const label = q.unit && q.unit !== '-' ? q.unit : q.question;
+      const seen = (counts.get(label) || 0) + (q.frequency || 1);
+      counts.set(label, seen);
+    }
+    return [...counts.entries()]
+      .map(([label, count]) => ({ label, count }))
+      .sort((a, b) => b.count - a.count);
+  }, [questions]);
 
   const sidebarNavItems = [
     { label: 'Home', path: '/dashboard', icon: <HomeIcon className="w-4 h-4" /> },
@@ -383,78 +555,136 @@ export default function PYQs() {
             {/* Top 10 Important Questions Table */}
             <div className="bg-white rounded-2xl p-5 border border-slate-200/80 shadow-sm space-y-4">
               <div>
-                <h3 className="text-sm font-bold text-slate-800 flex items-center gap-2">
-                  <Sparkle className="w-4 h-4 text-blue-600 fill-blue-600" />
-                  Top 10 Important Questions
-                </h3>
-                <p className="text-xs text-slate-400 mt-0.5">Based on analysis of 4 question papers • 86 total questions</p>
+                  <h3 className="text-sm font-bold text-slate-800 flex items-center gap-2">
+                    <Sparkle className="w-4 h-4 text-blue-600 fill-blue-600" />
+                    {numQuestions === 'Custom' 
+                      ? `Top ${customNumQuestions} Important Questions`
+                      : `${numQuestions} Important Questions`}
+                  </h3>
+                  {hasAnalyzed && (
+                    <p className="text-xs text-slate-400 mt-0.5">Based on analysis of {analysisStats.papersAnalyzed} question paper{analysisStats.papersAnalyzed !== 1 ? 's' : ''} • {analysisStats.totalQuestions} total questions</p>
+                  )}
+                  {!hasAnalyzed && !analysisError && (
+                    <p className="text-xs text-slate-400 mt-0.5">Upload files and analyze to see top questions</p>
+                  )}
+                  {!hasAnalyzed && analysisError && (
+                    <p className="text-xs text-rose-500 mt-0.5">{analysisError}</p>
+                  )}
               </div>
 
               {/* Table */}
-              <div className="overflow-x-auto">
-                <table className="w-full text-left text-xs border-collapse">
-                  <thead>
+              {hasAnalyzed && questions.length > 0 ? (
+                <>
+                  <div className="overflow-x-auto">
+                    <table className="w-full text-left text-xs border-collapse">
+                      <thead>
                     <tr className="border-b border-slate-100 text-slate-400 text-[11px] font-semibold">
                       <th className="py-2.5 px-2">#</th>
                       <th className="py-2.5 px-2">Question</th>
                       <th className="py-2.5 px-2">Years Appeared</th>
-                      <th className="py-2.5 px-2">Unit</th>
+                      <th className="py-2.5 px-2">Frequency</th>
+                      <th className="py-2.5 px-2">Unit/Topic</th>
                       <th className="py-2.5 px-2">Marks</th>
                       <th className="py-2.5 px-2">Importance</th>
                       <th className="py-2.5 px-2 text-right">Action</th>
                     </tr>
-                  </thead>
-                  <tbody className="divide-y divide-slate-100 text-slate-700">
-                    {questions.map((q) => (
-                      <React.Fragment key={q.id}>
-                        <tr className="hover:bg-slate-50/80 transition-colors">
-                          <td className="py-3 px-2 font-bold text-slate-500">{q.id}</td>
-                          <td className="py-3 px-2 font-semibold text-slate-800 max-w-xs">{q.question}</td>
-                          <td className="py-3 px-2 text-slate-500 font-medium">{q.yearsAppeared}</td>
-                          <td className="py-3 px-2 text-slate-500 font-medium">{q.unit}</td>
-                          <td className="py-3 px-2 font-bold text-slate-800">{q.marks}</td>
-                          <td className="py-3 px-2">
-                            <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold ${
-                              q.importance === 'High' ? 'bg-rose-50 text-rose-600 border border-rose-100' : 'bg-amber-50 text-amber-600 border border-amber-100'
-                            }`}>
-                              {q.importance}
-                            </span>
-                          </td>
-                          <td className="py-3 px-2 text-right">
-                            <button
-                              onClick={() => setExpandedQuestionId(expandedQuestionId === q.id ? null : q.id)}
-                              className="px-2.5 py-1 bg-blue-50 hover:bg-blue-100 text-blue-600 font-semibold rounded-lg text-[11px] inline-flex items-center gap-1 transition-colors"
-                            >
-                              View Answer
-                              {expandedQuestionId === q.id ? <ChevronUp className="w-3 h-3" /> : <ChevronDown className="w-3 h-3" />}
-                            </button>
-                          </td>
-                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-slate-100 text-slate-700">
+                        {questions.map((q, idx) => (
+                          <React.Fragment key={q.id || idx}>
+                            <tr className="hover:bg-slate-50/80 transition-colors">
+                              <td className="py-3 px-2 font-bold text-slate-500">{idx + 1}</td>
+                              <td className="py-3 px-2 font-semibold text-slate-800 max-w-xs">{q.question}</td>
+                              <td className="py-3 px-2 text-slate-500 font-medium">{q.yearsAppeared || '-'}</td>
+                              <td className="py-3 px-2 text-slate-500 font-medium">{q.frequency || 1}</td>
+                              <td className="py-3 px-2 text-slate-500 font-medium">{q.unit || '-'}</td>
+                              <td className="py-3 px-2 font-bold text-slate-800">{q.marks || '-'}</td>
+                              <td className="py-3 px-2">
+                                <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold ${
+                                  q.importance === 'High' ? 'bg-rose-50 text-rose-600 border border-rose-100' : q.importance === 'Medium' ? 'bg-amber-50 text-amber-600 border border-amber-100' : 'bg-slate-50 text-slate-600 border border-slate-100'
+                                }`}>
+                                  {q.importance || 'Medium'}
+                                </span>
+                              </td>
+                              <td className="py-3 px-2 text-right">
+                                <button
+                                  onClick={() => handleViewAnswer(q)}
+                                  disabled={answerLoadingId === (q.id || idx)}
+                                  className="px-2.5 py-1 bg-blue-50 hover:bg-blue-100 text-blue-600 font-semibold rounded-lg text-[11px] inline-flex items-center gap-1 transition-colors disabled:opacity-60 disabled:cursor-not-allowed"
+                                >
+                                  {answerLoadingId === (q.id || idx) ? 'Generating...' : 'View Answer'}
+                                  {answerLoadingId !== (q.id || idx) && (expandedQuestionId === (q.id || idx) ? <ChevronUp className="w-3 h-3" /> : <ChevronDown className="w-3 h-3" />)}
+                                </button>
+                              </td>
+                            </tr>
 
-                        {/* Answer Expanded Row */}
-                        {expandedQuestionId === q.id && (
-                          <tr>
-                            <td colSpan="7" className="p-4 bg-slate-50/90 rounded-xl">
-                              <div className="text-xs text-slate-700 space-y-1">
-                                <p className="font-bold text-blue-600">AI-Generated Answer:</p>
-                                <p className="leading-relaxed bg-white p-3 rounded-xl border border-slate-200">{q.answer}</p>
-                              </div>
-                            </td>
-                          </tr>
-                        )}
-                      </React.Fragment>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
+                            {/* Answer Expanded Row */}
+                            {expandedQuestionId === (q.id || idx) && (
+                              <tr>
+                                <td colSpan="8" className="p-4 bg-slate-50/90 rounded-xl">
+                                  <div className="text-xs text-slate-700 space-y-2">
+                                    <p className="font-bold text-blue-600">AI-Generated Answer:</p>
 
-              {/* Table Footer */}
-              <div className="flex items-center justify-between pt-2 border-t border-slate-100 text-xs">
-                <span className="text-slate-400">Showing 5 of 10 important questions</span>
-                <button className="text-blue-600 font-semibold hover:underline flex items-center gap-1">
-                  View All 10 Questions <ArrowRight className="w-3.5 h-3.5" />
-                </button>
-              </div>
+                                    {answerLoadingId === (q.id || idx) ? (
+                                      <div className="bg-white p-4 rounded-xl border border-slate-200 flex items-center gap-2 text-slate-500">
+                                        <Loader2 className="w-4 h-4 animate-spin" />
+                                        <span>Generating answer for {selectedMarks} ({answerLength})...</span>
+                                      </div>
+                                    ) : answerErrors[q.id || idx] ? (
+                                      <div className="bg-white p-3 rounded-xl border border-rose-200 text-rose-600">
+                                        {answerErrors[q.id || idx]}
+                                      </div>
+                                    ) : answers[q.id || idx] ? (
+                                      <>
+                                        {answers[q.id || idx].hasContext ? (
+                                          <p className="text-[11px] text-emerald-700 bg-emerald-50 border border-emerald-100 rounded-lg px-2.5 py-1.5">
+                                            <span className="font-bold">Grounded in study materials.</span> This answer was generated from your uploaded study materials.
+                                          </p>
+                                        ) : (
+                                          <p className="text-[11px] text-amber-700 bg-amber-50 border border-amber-100 rounded-lg px-2.5 py-1.5">
+                                            <span className="font-bold">Generated using general LLM knowledge.</span> Relevant information was not found in your uploaded study materials, so this answer was not grounded in them.
+                                          </p>
+                                        )}
+                                        <p className="leading-relaxed bg-white p-3 rounded-xl border border-slate-200 whitespace-pre-wrap">{answers[q.id || idx].answer}</p>
+                                        {answers[q.id || idx].sources.length > 0 && (
+                                          <div className="bg-white p-3 rounded-xl border border-slate-200">
+                                            <p className="text-[11px] text-slate-500 font-semibold">Study materials used:</p>
+                                            <ul className="space-y-1 text-[11px] text-slate-500">
+                                              {answers[q.id || idx].sources.map((src) => (
+                                                <li key={src.source_index}>
+                                                  [Source {src.source_index}] {src.material_title || src.original_filename || 'Study material'}
+                                                  {src.source_location ? ` - ${src.source_location}` : ''}
+                                                </li>
+                                              ))}
+                                            </ul>
+                                          </div>
+                                        )}
+                                      </>
+                                    ) : null}
+                                  </div>
+                                </td>
+                              </tr>
+                            )}
+                          </React.Fragment>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+
+                  {/* Table Footer */}
+                  <div className="flex items-center justify-between pt-2 border-t border-slate-100 text-xs">
+                    <span className="text-slate-400">Showing {questions.length} of {questions.length} important questions</span>
+                  </div>
+                </>
+              ) : (
+                <div className="text-center py-8 text-xs text-slate-400">
+                  {isAnalyzing
+                    ? 'Analyzing question papers...'
+                    : analysisError
+                      ? analysisError
+                      : 'No questions analyzed yet. Upload files and click Analyze PYQs.'}
+                </div>
+              )}
             </div>
 
           </div>
@@ -484,32 +714,51 @@ export default function PYQs() {
                 </select>
               </div>
 
-              {/* Number of Questions Pills */}
-              <div className="space-y-1.5">
-                <label className="block text-[11px] font-bold text-slate-700">Number of Questions</label>
-                <div className="flex flex-wrap gap-1.5">
-                  {['Top 5', 'Top 10', 'Top 15', 'Top 20', 'Custom'].map((item) => (
-                    <button
-                      key={item}
-                      onClick={() => setNumQuestions(item)}
-                      className={`px-3 py-1 rounded-lg text-xs font-semibold border transition-all ${
-                        numQuestions === item
-                          ? 'bg-blue-50 border-blue-500 text-blue-600'
-                          : 'bg-white border-slate-200 text-slate-600 hover:bg-slate-50'
-                      }`}
-                    >
-                      {item}
-                    </button>
-                  ))}
-                </div>
-              </div>
+               {/* Number of Questions Pills */}
+               <div className="space-y-1.5">
+                 <label className="block text-[11px] font-bold text-slate-700">Number of Questions</label>
+                 <div className="flex flex-wrap gap-1.5">
+                   {['Top 5', 'Top 10', 'Top 20', 'Custom'].map((item) => (
+                     <button
+                       key={item}
+                       onClick={() => setNumQuestions(item)}
+                       className={`px-3 py-1 rounded-lg text-xs font-semibold border transition-all ${
+                         numQuestions === item
+                           ? 'bg-blue-50 border-blue-500 text-blue-600'
+                           : 'bg-white border-slate-200 text-slate-600 hover:bg-slate-50'
+                       }`}
+                     >
+                       {item}
+                     </button>
+                   ))}
+                 </div>
+                 {numQuestions === 'Custom' && (
+                   <div className="mt-2 flex items-center gap-2">
+                     <input
+                       type="number"
+                       min="1"
+                       max="50"
+                       value={customNumQuestions}
+                       onChange={(e) => {
+                         let val = parseInt(e.target.value);
+                         if (isNaN(val) || val < 1) val = 1;
+                         if (val > 50) val = 50;
+                         setCustomNumQuestions(val);
+                       }}
+                       className="w-20 px-2 py-1 bg-slate-50 border border-slate-200 rounded-lg text-xs text-slate-700 font-medium outline-none focus:border-blue-500"
+                       placeholder="Enter number"
+                     />
+                     <span className="text-[11px] text-slate-500">questions</span>
+                   </div>
+                 )}
+               </div>
 
               {/* Answer Format - Answer Length */}
               <div className="space-y-1.5">
                 <label className="block text-[11px] font-bold text-slate-700">Answer Format</label>
                 <p className="text-[10px] text-slate-400">Answer Length</p>
                 <div className="flex flex-wrap gap-1.5">
-                  {['Very Short', 'Short', 'Medium', 'Detailed', 'Exam-Oriented'].map((item) => (
+                   {['Short', 'Medium', 'Detailed', 'Exam-Oriented'].map((item) => (
                     <button
                       key={item}
                       onClick={() => setAnswerLength(item)}
@@ -568,7 +817,7 @@ export default function PYQs() {
               <div className="space-y-1.5">
                 <label className="block text-[11px] font-bold text-slate-700">Marks</label>
                 <div className="grid grid-cols-4 gap-1.5">
-                  {['2 Marks', '5 Marks', '10 Marks', '15 Marks'].map((m) => (
+                   {['2 Marks', '5 Marks', '10 Marks', '20 Marks'].map((m) => (
                     <button
                       key={m}
                       onClick={() => setSelectedMarks(m)}
@@ -588,67 +837,84 @@ export default function PYQs() {
               <button
                 onClick={handleAnalyze}
                 disabled={isAnalyzing}
-                className="w-full py-2.5 bg-blue-600 hover:bg-blue-700 text-white rounded-xl text-xs font-bold flex items-center justify-center gap-2 shadow-md shadow-blue-500/20 transition-all"
+                aria-busy={isAnalyzing}
+                className="w-full py-2.5 bg-blue-600 hover:bg-blue-700 text-white rounded-xl text-xs font-bold flex items-center justify-center gap-2 shadow-md shadow-blue-500/20 transition-all disabled:opacity-60 disabled:cursor-not-allowed disabled:hover:bg-blue-600"
               >
-                <Sparkles className="w-4 h-4" />
+                {isAnalyzing ? <Loader2 className="w-4 h-4 animate-spin" /> : <Sparkles className="w-4 h-4" />}
                 {isAnalyzing ? 'Analyzing Question Papers...' : 'Analyze PYQs'}
               </button>
             </div>
 
-            {/* Analysis Summary Box */}
+            {/* Analysis status messages */}
+            {isAnalyzing && (
+              <div className="bg-blue-50 border border-blue-100 rounded-2xl p-3.5 flex items-center gap-2.5 text-xs text-blue-700">
+                <Loader2 className="w-4 h-4 animate-spin shrink-0" />
+                <span>Analyzing question papers...</span>
+              </div>
+            )}
+
+            {!isAnalyzing && analysisError && (
+              <div className="bg-rose-50 border border-rose-100 rounded-2xl p-3.5 text-xs text-rose-700">
+                <p className="font-semibold">{analysisError}</p>
+                {failedFiles.length > 0 && (
+                  <ul className="mt-1.5 list-disc pl-4 text-[11px] space-y-0.5">
+                    {failedFiles.map((name) => (
+                      <li key={name}>{name}</li>
+                    ))}
+                  </ul>
+                )}
+              </div>
+            )}
+
+{/* Analysis Summary Box - only after a successful analysis */}
+            {hasAnalyzed && (
             <div className="bg-white rounded-2xl p-5 border border-slate-200/80 shadow-sm space-y-4">
               <h3 className="text-xs font-bold text-slate-800 uppercase tracking-wider flex items-center gap-1.5">
                 <BarChart3 className="w-3.5 h-3.5 text-blue-600" />
                 Analysis Summary
               </h3>
 
-              {/* Stat Counters Row */}
-              <div className="grid grid-cols-4 gap-2 text-center">
-                <div className="bg-blue-50/60 p-2 rounded-xl border border-blue-100">
-                  <p className="text-[9px] font-semibold text-slate-400">Papers Analyzed</p>
-                  <p className="text-base font-bold text-blue-600 mt-0.5">{files.length}</p>
-                </div>
-                <div className="bg-emerald-50/60 p-2 rounded-xl border border-emerald-100">
-                  <p className="text-[9px] font-semibold text-slate-400">Total Questions</p>
-                  <p className="text-base font-bold text-emerald-600 mt-0.5">86</p>
-                </div>
-                <div className="bg-purple-50/60 p-2 rounded-xl border border-purple-100">
-                  <p className="text-[9px] font-semibold text-slate-400">Repeated</p>
-                  <p className="text-base font-bold text-purple-600 mt-0.5">24</p>
-                </div>
-                <div className="bg-amber-50/60 p-2 rounded-xl border border-amber-100">
-                  <p className="text-[9px] font-semibold text-slate-400">Top Priority</p>
-                  <p className="text-base font-bold text-amber-600 mt-0.5">12</p>
-                </div>
-              </div>
+               {/* Stat Counters Row */}
+               <div className="grid grid-cols-4 gap-2 text-center">
+                 <div className="bg-blue-50/60 p-2 rounded-xl border border-blue-100">
+                   <p className="text-[9px] font-semibold text-slate-400">Papers Analyzed</p>
+                   <p className="text-base font-bold text-blue-600 mt-0.5">{analysisStats.papersAnalyzed}</p>
+                 </div>
+                 <div className="bg-emerald-50/60 p-2 rounded-xl border border-emerald-100">
+                   <p className="text-[9px] font-semibold text-slate-400">Total Questions</p>
+                   <p className="text-base font-bold text-emerald-600 mt-0.5">{analysisStats.totalQuestions}</p>
+                 </div>
+                 <div className="bg-purple-50/60 p-2 rounded-xl border border-purple-100">
+                   <p className="text-[9px] font-semibold text-slate-400">Repeated</p>
+                   <p className="text-base font-bold text-purple-600 mt-0.5">{analysisStats.repeated}</p>
+                 </div>
+                 <div className="bg-amber-50/60 p-2 rounded-xl border border-amber-100">
+                   <p className="text-[9px] font-semibold text-slate-400">Top Priority</p>
+                   <p className="text-base font-bold text-amber-600 mt-0.5">{analysisStats.topPriority}</p>
+                 </div>
+               </div>
 
-              {/* Most Repeated Topics List */}
-              <div className="space-y-2 pt-2 border-t border-slate-100">
-                <h4 className="text-[11px] font-bold text-slate-700">Most Repeated Topics</h4>
-                <ol className="space-y-1.5 text-xs text-slate-600">
-                  <li className="flex items-center gap-2">
-                    <span className="w-4 h-4 rounded-full bg-blue-100 text-blue-600 text-[10px] font-bold flex items-center justify-center">1</span>
-                    1. OSI Model
-                  </li>
-                  <li className="flex items-center gap-2">
-                    <span className="w-4 h-4 rounded-full bg-blue-100 text-blue-600 text-[10px] font-bold flex items-center justify-center">2</span>
-                    2. TCP/IP
-                  </li>
-                  <li className="flex items-center gap-2">
-                    <span className="w-4 h-4 rounded-full bg-blue-100 text-blue-600 text-[10px] font-bold flex items-center justify-center">3</span>
-                    3. Routing Algorithms
-                  </li>
-                  <li className="flex items-center gap-2">
-                    <span className="w-4 h-4 rounded-full bg-blue-100 text-blue-600 text-[10px] font-bold flex items-center justify-center">4</span>
-                    4. Network Security
-                  </li>
-                  <li className="flex items-center gap-2">
-                    <span className="w-4 h-4 rounded-full bg-blue-100 text-blue-600 text-[10px] font-bold flex items-center justify-center">5</span>
-                    5. Error Detection
-                  </li>
-                </ol>
-              </div>
+{/* Most Repeated Topics List */}
+               <div className="space-y-2 pt-2 border-t border-slate-100">
+                 <h4 className="text-[11px] font-bold text-slate-700">Most Repeated Topics</h4>
+                 {repeatedTopics.length > 0 ? (
+                   <ol className="space-y-1.5 text-xs text-slate-600">
+                     {repeatedTopics.slice(0, 5).map((topic, idx) => (
+                       <li key={idx} className="flex items-center gap-2">
+                         <span className="w-4 h-4 rounded-full bg-blue-100 text-blue-600 text-[10px] font-bold flex items-center justify-center">{idx + 1}</span>
+                         <span className="flex-1">{topic.label.length > 40 ? topic.label.substring(0, 40) + '...' : topic.label}</span>
+                         <span className="text-[10px] font-bold text-blue-600">{topic.count}x</span>
+                       </li>
+                     ))}
+                   </ol>
+                 ) : (
+                   <div className="text-xs text-slate-400">
+                     No repeated topics found in the analyzed papers.
+                   </div>
+                 )}
+               </div>
             </div>
+            )}
 
           </div>
         </div>

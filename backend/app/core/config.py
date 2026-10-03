@@ -23,7 +23,13 @@ _DEFAULT_CORS_ORIGINS = (
 _DEFAULT_LLM_PROVIDER = "ollama"
 _DEFAULT_LLM_MODEL = "qwen2.5-coder:7b"
 _DEFAULT_LLM_THINK = False
-_DEFAULT_LLM_TIMEOUT_SECONDS = 120
+# Seconds allowed for one LLM generation. The default model
+# (qwen2.5-coder:7b) runs locally and on a CPU-only machine generates roughly
+# 3 tokens/sec, so a long exam answer needs well over two minutes: the 10-mark
+# PYQ budget of 1100 tokens takes ~190s and the 20-mark budget of 1600 tokens
+# ~230s. The previous 120s default could not complete either, and the timeout
+# was incorrectly reported as the model being "temporarily unavailable".
+_DEFAULT_LLM_TIMEOUT_SECONDS = 300
 _DEFAULT_LLM_MAX_TOKENS = 512
 _DEFAULT_OLLAMA_BASE_URL = "http://127.0.0.1:11434"
 _DEFAULT_RAG_VECTOR_STORE_PATH = ""
