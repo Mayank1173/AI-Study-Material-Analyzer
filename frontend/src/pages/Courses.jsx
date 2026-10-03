@@ -1,6 +1,7 @@
-﻿import React, { useState } from 'react';
+﻿import React, { useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { useUser } from '../context/UserContext';
+import { apiFetch } from '../lib/api';
 import {
   Search,
   Bell,
@@ -30,6 +31,105 @@ import {
   X
 } from 'lucide-react';
 
+const COURSE_PALETTE = [
+  { color: 'bg-blue-500', lightBg: 'bg-blue-50 text-blue-600', Icon: BookOpen },
+  { color: 'bg-indigo-500', lightBg: 'bg-indigo-50 text-indigo-600', Icon: Layers },
+  { color: 'bg-emerald-500', lightBg: 'bg-emerald-50 text-emerald-600', Icon: Leaf },
+  { color: 'bg-purple-500', lightBg: 'bg-purple-50 text-purple-600', Icon: Code },
+];
+
+function themeFor(id) {
+  const text = String(id);
+  let hash = 0;
+  for (let i = 0; i < text.length; i += 1) hash = (hash * 31 + text.charCodeAt(i)) >>> 0;
+  const theme = COURSE_PALETTE[hash % COURSE_PALETTE.length];
+  return {
+    color: theme.color,
+    lightBg: theme.lightBg,
+    icon: <theme.Icon className="w-5 h-5 text-white" />,
+  };
+}
+
+function parseExtras(description) {
+  if (!description) return {};
+  try {
+    const parsed = JSON.parse(description);
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : {};
+  } catch {
+    return {};
+  }
+}
+
+function mapCourse(item) {
+  const extras = parseExtras(item.description);
+  return {
+    id: item.id,
+    title: item.name,
+    code: item.code,
+    semester: typeof extras.semester === 'string' && extras.semester ? extras.semester : 'Semester 1',
+    instructor: typeof extras.instructor === 'string' && extras.instructor ? extras.instructor : 'Prof. Unassigned',
+    progress: Number(extras.progress) || 0,
+    modules: Number(extras.modules) || 8,
+    assignments: Number(extras.assignments) || 0,
+    ...themeFor(item.id),
+  };
+}
+
+const SEED_COURSES = [
+  {
+    id: 1,
+    title: 'Data Computer and Computer Network (DCCN)',
+    code: '4CSGC2062',
+    semester: 'Semester 5',
+    instructor: 'Dr Arokia Jesu L Prabhu',
+    progress: 0,
+    modules: 12,
+    assignments: 4,
+    color: 'bg-blue-500',
+    lightBg: 'bg-blue-50 text-blue-600',
+    icon: <Network className="w-5 h-5 text-white" />
+  },
+  {
+    id: 2,
+    title: 'Environment and Sustainability (E&S)',
+    code: 'CKHM1011',
+    semester: 'Semester 5',
+    instructor: 'Prof. Manohar K M',
+    progress: 0,
+    modules: 10,
+    assignments: 3,
+    color: 'bg-emerald-500',
+    lightBg: 'bg-emerald-50 text-emerald-600',
+    icon: <Leaf className="w-5 h-5 text-white" />
+  },
+  {
+    id: 3,
+    title: 'Full Stack Development (FSD)',
+    code: '4CSPL2021',
+    semester: 'Semester 5',
+    instructor: 'Prof. Rohith Kumar',
+    progress: 0,
+    modules: 14,
+    assignments: 5,
+    color: 'bg-purple-500',
+    lightBg: 'bg-purple-50 text-purple-600',
+    icon: <Code className="w-5 h-5 text-white" />
+  },
+  {
+    id: 4,
+    title: 'Ethical Hacking',
+    code: '4CSGC3221',
+    semester: 'Semester 5',
+    instructor: 'Prof. Rohith Kumar',
+    progress: 0,
+    modules: 12,
+    assignments: 3,
+    color: 'bg-amber-500',
+    lightBg: 'bg-amber-50 text-amber-600',
+    icon: <ShieldAlert className="w-5 h-5 text-white" />
+  }
+];
+
 export default function Courses() {
   const [showNotifications, setShowNotifications] = useState(false);
   const { user } = useUser();
@@ -40,62 +140,11 @@ export default function Courses() {
   const [recentActivity, setRecentActivity] = useState([]);
   const [upcomingDeadlines, setUpcomingDeadlines] = useState([]);
 
-  const [coursesList, setCoursesList] = useState([
-    {
-      id: 1,
-      title: 'Data Computer and Computer Network (DCCN)',
-      code: '4CSGC2062',
-      semester: 'Semester 5',
-      instructor: 'Dr Arokia Jesu L Prabhu',
-      progress: 0,
-      modules: 12,
-      assignments: 4,
-      color: 'bg-blue-500',
-      lightBg: 'bg-blue-50 text-blue-600',
-      icon: <Network className="w-5 h-5 text-white" />
-    },
-    {
-      id: 2,
-      title: 'Environment and Sustainability (E&S)',
-      code: 'CKHM1011',
-      semester: 'Semester 5',
-      instructor: 'Prof. Manohar K M',
-      progress: 0,
-      modules: 10,
-      assignments: 3,
-      color: 'bg-emerald-500',
-      lightBg: 'bg-emerald-50 text-emerald-600',
-      icon: <Leaf className="w-5 h-5 text-white" />
-    },
-    {
-      id: 3,
-      title: 'Full Stack Development (FSD)',
-      code: '4CSPL2021',
-      semester: 'Semester 5',
-      instructor: 'Prof. Rohith Kumar',
-      progress: 0,
-      modules: 14,
-      assignments: 5,
-      color: 'bg-purple-500',
-      lightBg: 'bg-purple-50 text-purple-600',
-      icon: <Code className="w-5 h-5 text-white" />
-    },
-    {
-      id: 4,
-      title: 'Ethical Hacking',
-      code: '4CSGC3221',
-      semester: 'Semester 5',
-      instructor: 'Prof. Rohith Kumar',
-      progress: 0,
-      modules: 12,
-      assignments: 3,
-      color: 'bg-amber-500',
-      lightBg: 'bg-amber-50 text-amber-600',
-      icon: <ShieldAlert className="w-5 h-5 text-white" />
-    }
-  ]);
+  const [coursesList, setCoursesList] = useState(SEED_COURSES);
 
   const [isModalOpen, setIsModalOpen] = useState(false);
+  const [isSaving, setIsSaving] = useState(false);
+  const [formError, setFormError] = useState('');
   const [newCourse, setNewCourse] = useState({
     title: '',
     code: '',
@@ -105,52 +154,82 @@ export default function Courses() {
     assignments: 2
   });
 
-  const handleAddCourse = (e) => {
+  useEffect(() => {
+    let cancelled = false;
+    apiFetch('/api/courses/mine?page=1&page_size=100')
+      .then((data) => {
+        if (cancelled) return;
+        const items = (data && data.items) || [];
+        setCoursesList([...items.map(mapCourse), ...SEED_COURSES]);
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  const handleAddCourse = async (e) => {
     e.preventDefault();
-    if (!newCourse.title.trim()) return;
+    if (!newCourse.title.trim() || isSaving) return;
 
-    const colors = [
-      { color: 'bg-blue-500', lightBg: 'bg-blue-50 text-blue-600', icon: <BookOpen className="w-5 h-5 text-white" /> },
-      { color: 'bg-indigo-500', lightBg: 'bg-indigo-50 text-indigo-600', icon: <Layers className="w-5 h-5 text-white" /> },
-      { color: 'bg-emerald-500', lightBg: 'bg-emerald-50 text-emerald-600', icon: <Leaf className="w-5 h-5 text-white" /> },
-      { color: 'bg-purple-500', lightBg: 'bg-purple-50 text-purple-600', icon: <Code className="w-5 h-5 text-white" /> },
-    ];
+    setIsSaving(true);
+    setFormError('');
 
-    const randomTheme = colors[Math.floor(Math.random() * colors.length)];
-
-    const createdCourse = {
-      id: Date.now(),
-      title: newCourse.title,
-      code: newCourse.code || 'CS101',
+    const extras = {
       semester: newCourse.semester,
       instructor: newCourse.instructor || 'Prof. Unassigned',
-      progress: 0,
       modules: Number(newCourse.modules) || 8,
-      assignments: Number(newCourse.assignments) || 2,
-      ...randomTheme
+      assignments: Number(newCourse.assignments) || 2
     };
+    const code = newCourse.code.trim() || `CRS${Date.now().toString(36).toUpperCase().slice(-5)}`;
 
-    setCoursesList([createdCourse, ...coursesList]);
-    
-    // Dynamically log this action in Recent Activity
-    setRecentActivity([
-      { 
-        text: `Enrolled in ${newCourse.title}`, 
-        time: 'Just now', 
-        icon: <Plus className="w-4 h-4 text-blue-500" /> 
-      },
-      ...recentActivity
-    ]);
+    try {
+      const created = await apiFetch('/api/courses', {
+        method: 'POST',
+        body: {
+          name: newCourse.title.trim(),
+          code,
+          description: JSON.stringify(extras)
+        }
+      });
 
-    setIsModalOpen(false);
-    setNewCourse({
-      title: '',
-      code: '',
-      semester: 'Semester 1',
-      instructor: '',
-      modules: 10,
-      assignments: 2
-    });
+      const createdCourse = {
+        id: created.id,
+        title: created.name,
+        code: created.code,
+        progress: 0,
+        ...extras,
+        ...themeFor(created.id)
+      };
+
+      setCoursesList((prev) => [createdCourse, ...prev]);
+      setRecentActivity((prev) => [
+        {
+          text: `Enrolled in ${created.name}`,
+          time: 'Just now',
+          icon: <Plus className="w-4 h-4 text-blue-500" />
+        },
+        ...prev
+      ]);
+
+      setIsModalOpen(false);
+      setNewCourse({
+        title: '',
+        code: '',
+        semester: 'Semester 1',
+        instructor: '',
+        modules: 10,
+        assignments: 2
+      });
+    } catch (err) {
+      setFormError(
+        err && err.status === 409
+          ? 'You already have a course with this code.'
+          : (err && err.message) || 'Could not create the course. Please try again.'
+      );
+    } finally {
+      setIsSaving(false);
+    }
   };
 
   const sidebarNavItems = [
@@ -288,7 +367,10 @@ export default function Courses() {
 
               {/* Add Course Trigger Button */}
               <button
-                onClick={() => setIsModalOpen(true)}
+                onClick={() => {
+                  setIsModalOpen(true);
+                  setFormError('');
+                }}
                 className="px-4 py-2.5 bg-blue-600 hover:bg-blue-700 text-white text-xs font-semibold rounded-xl flex items-center gap-2 shadow-md shadow-blue-600/20 transition-all"
               >
                 <Plus className="w-4 h-4" /> Add Course
@@ -614,6 +696,10 @@ export default function Courses() {
                 </div>
               </div>
 
+              {formError && (
+                <p className="text-rose-600 text-xs font-semibold text-right">{formError}</p>
+              )}
+
               <div className="flex items-center justify-end gap-2 pt-3 border-t border-slate-100">
                 <button
                   type="button"
@@ -624,9 +710,10 @@ export default function Courses() {
                 </button>
                 <button
                   type="submit"
-                  className="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-xl font-semibold shadow-md shadow-blue-600/20"
+                  disabled={isSaving}
+                  className="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-xl font-semibold shadow-md shadow-blue-600/20 disabled:opacity-60 disabled:cursor-not-allowed"
                 >
-                  Create Course
+                  {isSaving ? 'Creating...' : 'Create Course'}
                 </button>
               </div>
             </form>
